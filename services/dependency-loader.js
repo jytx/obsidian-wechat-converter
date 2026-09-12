@@ -1,10 +1,137 @@
-const { embeddedDependencyScripts } = require('./generated-embedded-deps');
+/*
+## 核心功能
 
-function getAvatarSrc(settings = {}) {
-  if (!settings.enableWatermark) return '';
-  return settings.avatarBase64 || settings.avatarUrl || '';
+提供服务层通用能力：dependency loader。
+
+## 输入
+
+接收上游视图、转换器、同步服务或工具脚本传入的数据。
+
+## 输出
+
+输出 `getAvatarSrc`、`toThemeOptions`、`buildRenderRuntime`、`loadRuntimeDependencies`、`readEmbeddedOrFile`，供项目内其他模块复用。
+
+## 定位
+
+位于 services/，是共享服务模块；保持输入输出清晰，避免引入 UI 状态耦合。
+
+## 依赖
+
+关键依赖：`../lib/markdown-it.min.js`、`../lib/highlight.min.js`、`../lib/mathjax-plugin.js`、`../themes/apple-theme.js`、`../converter.js`。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 services 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
+import markdownit from '../lib/markdown-it.min.js';
+import hljs from '../lib/highlight.min.js';
+import '../lib/mathjax-plugin.js';
+
+/**
+ * @typedef {Record<string, unknown> & { window?: RuntimeGlobal }} RuntimeGlobal
+ * @typedef {{ read?: (path: string) => Promise<string> | string, exists?: (path: string) => Promise<boolean> | boolean }} FileAdapterLike
+ * @typedef {{ error?: (...args: unknown[]) => void }} LoggerLike
+ * @typedef {new (...args: unknown[]) => {}} ConstructorLike
+ * @typedef {{ initMarkdownIt?: () => Promise<void> | void }} ConverterLike
+ */
+
+function getRuntimeGlobal() {
+  if (typeof window !== 'undefined' && window) return /** @type {RuntimeGlobal} */ (window);
+  return null;
 }
 
+/**
+ * @param {string} name
+ * @param {unknown} value
+ */
+function assignRuntimeGlobal(name, value) {
+  const runtimeGlobal = getRuntimeGlobal();
+  if (runtimeGlobal) {
+    runtimeGlobal[name] = value;
+    if (runtimeGlobal.window && runtimeGlobal.window !== runtimeGlobal) {
+      runtimeGlobal.window[name] = value;
+    }
+  }
+}
+
+/**
+ * @param {RuntimeGlobal | null} runtimeGlobal
+ * @param {string} name
+ * @returns {unknown}
+ */
+function getRuntimeValue(runtimeGlobal, name) {
+  return runtimeGlobal ? runtimeGlobal[name] : undefined;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {ConstructorLike | null}
+ */
+function asConstructor(value) {
+  return typeof value === 'function' ? /** @type {ConstructorLike} */ (value) : null;
+}
+
+async function loadRuntimeDependencies() {
+  const runtimeGlobal = getRuntimeGlobal();
+  if (!runtimeGlobal) {
+    throw new Error('Runtime global object is required to load converter dependencies');
+  }
+
+  if (typeof getRuntimeValue(runtimeGlobal, 'markdownit') === 'undefined') {
+    assignRuntimeGlobal('markdownit', markdownit);
+  }
+
+  if (typeof getRuntimeValue(runtimeGlobal, 'hljs') === 'undefined') {
+    assignRuntimeGlobal('hljs', hljs);
+  }
+
+  if (typeof getRuntimeValue(runtimeGlobal, 'ObsidianWechatMath') === 'undefined') {
+    const mathPlugin = getRuntimeValue(runtimeGlobal, 'ObsidianWechatMath')
+      || getRuntimeValue(runtimeGlobal.window || null, 'ObsidianWechatMath');
+    if (typeof mathPlugin !== 'undefined') {
+      assignRuntimeGlobal('ObsidianWechatMath', mathPlugin);
+    }
+  }
+
+  if (typeof getRuntimeValue(runtimeGlobal, 'AppleTheme') === 'undefined') {
+    const themeModule = await import('../themes/apple-theme.js');
+    const themeCtor = getRuntimeValue(runtimeGlobal, 'AppleTheme')
+      || getRuntimeValue(runtimeGlobal.window || null, 'AppleTheme')
+      || themeModule.default;
+    if (typeof themeCtor !== 'undefined') {
+      assignRuntimeGlobal('AppleTheme', themeCtor);
+    }
+  }
+
+  if (typeof getRuntimeValue(runtimeGlobal, 'AppleStyleConverter') === 'undefined') {
+    const converterModule = await import('../converter.js');
+    const converterCtor = getRuntimeValue(runtimeGlobal, 'AppleStyleConverter')
+      || getRuntimeValue(runtimeGlobal.window || null, 'AppleStyleConverter')
+      || converterModule.default;
+    if (typeof converterCtor !== 'undefined') {
+      assignRuntimeGlobal('AppleStyleConverter', converterCtor);
+    }
+  }
+
+  if (typeof getRuntimeValue(runtimeGlobal, 'AppleTheme') === 'undefined') throw new Error('AppleTheme failed to load');
+  if (typeof getRuntimeValue(runtimeGlobal, 'AppleStyleConverter') === 'undefined') throw new Error('AppleStyleConverter failed to load');
+}
+
+/**
+ * @param {Record<string, unknown>} settings
+ * @returns {string}
+ */
+function getAvatarSrc(settings = {}) {
+  if (!settings.enableWatermark) return '';
+  return String(settings.avatarBase64 || settings.avatarUrl || '');
+}
+
+/**
+ * @param {Record<string, unknown>} settings
+ * @returns {Record<string, unknown>}
+ */
 function toThemeOptions(settings = {}) {
   return {
     theme: settings.theme,
@@ -16,17 +143,30 @@ function toThemeOptions(settings = {}) {
     macCodeBlock: settings.macCodeBlock,
     codeLineNumber: settings.codeLineNumber,
     sidePadding: settings.sidePadding,
+    lineHeight: settings.lineHeight,
+    paragraphGap: settings.paragraphGap,
+    letterSpacing: settings.letterSpacing,
     coloredHeader: settings.coloredHeader,
   };
 }
 
+/**
+ * @param {object} params
+ * @param {string} params.key
+ * @param {FileAdapterLike=} params.adapter
+ * @param {string} params.path
+ * @param {boolean=} params.required
+ * @param {LoggerLike=} params.logger
+ * @param {Record<string, string>=} params.embeddedScripts
+ * @returns {Promise<string>}
+ */
 async function readEmbeddedOrFile({
   key,
   adapter,
   path,
   required = true,
   logger = console,
-  embeddedScripts = embeddedDependencyScripts,
+  embeddedScripts = {},
 }) {
   const embedded = embeddedScripts && typeof embeddedScripts[key] === 'string'
     ? embeddedScripts[key]
@@ -49,103 +189,51 @@ async function readEmbeddedOrFile({
     }
   }
 
-  return adapter.read(path);
+  return String(await adapter.read(path));
 }
 
-async function loadConverterDependencies({
-  adapter,
-  basePath,
-  execute,
-  logger = console,
-  embeddedScripts = embeddedDependencyScripts,
-}) {
-  if (typeof markdownit === 'undefined') {
-    const markdownItSource = await readEmbeddedOrFile({
-      key: 'markdownIt',
-      adapter,
-      path: `${basePath}/lib/markdown-it.min.js`,
-      logger,
-      embeddedScripts,
-    });
-    execute(markdownItSource);
-  }
-
-  if (typeof hljs === 'undefined') {
-    const highlightSource = await readEmbeddedOrFile({
-      key: 'highlight',
-      adapter,
-      path: `${basePath}/lib/highlight.min.js`,
-      logger,
-      embeddedScripts,
-    });
-    execute(highlightSource);
-  }
-
-  try {
-    const mathContent = await readEmbeddedOrFile({
-      key: 'mathjax',
-      adapter,
-      path: `${basePath}/lib/mathjax-plugin.js`,
-      required: false,
-      logger,
-      embeddedScripts,
-    });
-    if (mathContent) {
-      execute(mathContent);
-    }
-  } catch (error) {
-    logger.error('MathJax plugin load failed:', error);
-  }
-
-  const themeContent = await readEmbeddedOrFile({
-    key: 'theme',
-    adapter,
-    path: `${basePath}/themes/apple-theme.js`,
-    logger,
-    embeddedScripts,
-  });
-  execute(themeContent);
-
-  const converterContent = await readEmbeddedOrFile({
-    key: 'converter',
-    adapter,
-    path: `${basePath}/converter.js`,
-    logger,
-    embeddedScripts,
-  });
-  execute(converterContent);
-
-  if (!window.AppleTheme) throw new Error('AppleTheme failed to load');
-  if (!window.AppleStyleConverter) throw new Error('AppleStyleConverter failed to load');
-}
-
+/**
+ * @param {object} params
+ * @param {Record<string, unknown>} params.settings
+ * @param {unknown=} params.app
+ * @param {FileAdapterLike=} params.adapter
+ * @param {string=} params.basePath
+ * @returns {Promise<{ theme: unknown, converter: ConverterLike }>}
+ */
 async function buildRenderRuntime({
   settings,
   app,
   adapter,
   basePath,
-  execute = (code) => (0, eval)(code),
-  logger = console,
-  embeddedScripts = embeddedDependencyScripts,
 }) {
-  await loadConverterDependencies({ adapter, basePath, execute, logger, embeddedScripts });
+  if (adapter || basePath) {
+    // Keep the signature stable for existing callers, but runtime loading is now static.
+  }
+  await loadRuntimeDependencies();
 
-  const theme = new window.AppleTheme(toThemeOptions(settings));
-  const converter = new window.AppleStyleConverter(
+  const runtimeGlobal = getRuntimeGlobal();
+  const ThemeCtor = asConstructor(getRuntimeValue(runtimeGlobal, 'AppleTheme'));
+  const ConverterCtor = asConstructor(getRuntimeValue(runtimeGlobal, 'AppleStyleConverter'));
+
+  if (!ThemeCtor) throw new Error('AppleTheme failed to load');
+  if (!ConverterCtor) throw new Error('AppleStyleConverter failed to load');
+
+  const theme = new ThemeCtor(toThemeOptions(settings));
+  const converter = /** @type {ConverterLike} */ (new ConverterCtor(
     theme,
     getAvatarSrc(settings),
     settings.showImageCaption,
     app
-  );
-  await converter.initMarkdownIt();
+  ));
+  await converter.initMarkdownIt?.();
 
   return { theme, converter };
 }
 
-module.exports = {
+export {
   getAvatarSrc,
   toThemeOptions,
-  loadConverterDependencies,
   buildRenderRuntime,
+  loadRuntimeDependencies,
   readEmbeddedOrFile,
 };

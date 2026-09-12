@@ -1,10 +1,135 @@
+/*
+## 核心功能
+
+实现 Markdown 到微信公众号友好 HTML 的转换核心，覆盖 callout、代码块、图片、公式和清洗规则。
+
+## 输入
+
+接收 Markdown 原文、插件设置、主题运行时、路径解析上下文和嵌入依赖。
+
+## 输出
+
+输出 AppleStyleConverter 及其转换后的自包含 HTML、资源引用和渲染辅助结果。
+
+## 定位
+
+位于根目录，是渲染核心源文件；入口与视图只调用它，不在入口文件重复转换规则。
+
+## 依赖
+
+关键依赖：无直接模块导入；依赖当前运行环境或同文件内工具函数。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 根目录 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
 /**
  * 🍎 Apple Style Markdown 转换器
  * 直接照抄 wechat-tool 的代码块实现
  * 针对微信公众号优化：使用 section 结构，增强兼容性
  */
 
+/**
+ * @typedef {{ icon: string, label: string }} CalloutIconLike
+ * @typedef {{ type: string, title: string, icon: string, label: string }} CalloutInfoLike
+ * @typedef {{ base: number, h1?: number, h2?: number, h3?: number, h4?: number, h5?: number, h6?: number, code?: number, caption?: number }} ThemeSizesLike
+ * @typedef {{ macCodeBlock?: boolean, codeLineNumber?: boolean, getThemeColorValue: () => string, getSizes: () => ThemeSizesLike, getFontFamily: () => string, getStyle: (tagName: string) => string, getQuoteCalloutStyleMode?: () => string }} ThemeLike
+ * @typedef {{ type?: string, tag?: string, content?: string, info?: string, hidden?: boolean, children?: MarkdownTokenLike[], attrGet?: (name: string) => string | null }} MarkdownTokenLike
+ * @typedef {{ renderer: { rules: Record<string, (tokens: MarkdownTokenLike[], idx: number, options?: unknown, env?: Record<string, unknown>, self?: unknown) => string> }, render: (markdown: string) => string }} MarkdownItLike
+ * @typedef {{ getLanguage?: (language: string) => unknown, highlight?: (code: string, options: { language: string }) => { value: string }, highlightAuto?: (code: string) => { value: string } }} HighlightJsLike
+ * @typedef {{ path?: string, extension?: string }} TFileLike
+ * @typedef {{ metadataCache?: { getFirstLinkpathDest?: (linkPath: string, sourcePath: string) => TFileLike | null }, vault?: { getAbstractFileByPath?: (path: string) => TFileLike | null, getResourcePath?: (file: TFileLike) => string } }} AppLike
+ * @typedef {{ showImageCaption?: boolean, avatarUrl?: string }} ConverterConfigLike
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, unknown>}
+ */
+function toRecord(value) {
+  return isRecord(value) ? value : {};
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function toText(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function safeDecodeUri(value) {
+  const text = String(value || '').trim();
+  try {
+    return decodeURI(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function normalizeVaultPath(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/{2,}/g, '/');
+}
+
+/**
+ * @param {unknown} filePath
+ * @returns {string}
+ */
+function getVaultDirname(filePath) {
+  const normalized = normalizeVaultPath(filePath);
+  const index = normalized.lastIndexOf('/');
+  return index > 0 ? normalized.slice(0, index) : '';
+}
+
+/**
+ * @param {...unknown} parts
+ * @returns {string}
+ */
+function joinVaultPath(...parts) {
+  return normalizeVaultPath(parts.filter(Boolean).join('/'));
+}
+
+/**
+ * @param {MarkdownTokenLike[]} tokens
+ * @param {number} idx
+ * @returns {MarkdownTokenLike}
+ */
+function getToken(tokens, idx) {
+  return tokens[idx] || {};
+}
+
+/**
+ * @param {unknown} value
+ * @returns {(CalloutInfoLike | null)[]}
+ */
+function getCalloutStack(value) {
+  return Array.isArray(value) ? /** @type {(CalloutInfoLike | null)[]} */ (value) : [];
+}
+
 // Callout 图标配置（颜色跟随主题色）
+/** @type {Record<string, CalloutIconLike>} */
 const CALLOUT_ICONS = {
   // 信息类
   note: { icon: 'ℹ️', label: '备注' },
@@ -44,6 +169,7 @@ const CALLOUT_ICONS = {
   example: { icon: '📋', label: '示例' },
 };
 
+/** @type {Record<string, string>} */
 const CALLOUT_SEMANTIC_GROUPS = {
   note: 'info',
   info: 'info',
@@ -74,6 +200,7 @@ const CALLOUT_SEMANTIC_GROUPS = {
   example: 'quote',
 };
 
+/** @type {Record<string, string>} */
 const CALLOUT_SEMANTIC_COLORS = {
   info: '#2f6fdd',
   tip: '#1f8c7a',
@@ -84,32 +211,74 @@ const CALLOUT_SEMANTIC_COLORS = {
   quote: '#5f6b7a',
 };
 
+/**
+ * @param {unknown} type
+ * @param {string} fallbackColor
+ * @returns {string}
+ */
 function resolveCalloutSemanticColor(type, fallbackColor) {
   const key = String(type || '').trim().toLowerCase();
   const group = CALLOUT_SEMANTIC_GROUPS[key] || 'info';
   return CALLOUT_SEMANTIC_COLORS[group] || fallbackColor;
 }
 
-window.AppleStyleConverter = class AppleStyleConverter {
+const APPLE_CONVERTER_GLOBAL = /** @type {Record<string, unknown>} */ (typeof window !== 'undefined' ? window : {});
+
+/**
+ * @param {string} name
+ * @returns {unknown}
+ */
+function getRuntimeDependency(name) {
+  const runtimeWindow = typeof window !== 'undefined' ? toRecord(window) : {};
+  if (typeof runtimeWindow[name] !== 'undefined') {
+    return runtimeWindow[name];
+  }
+  return undefined;
+}
+
+class AppleStyleConverter {
+  /**
+   * @param {ThemeLike} theme
+   * @param {string} [avatarUrl]
+   * @param {boolean} [showImageCaption]
+   * @param {AppLike | null} [app]
+   * @param {string} [sourcePath]
+   */
   constructor(theme, avatarUrl = '', showImageCaption = true, app = null, sourcePath = '') {
+    /** @type {ThemeLike} */
     this.theme = theme;
+    /** @type {string} */
     this.avatarUrl = avatarUrl;
+    /** @type {string} */
+    this.avatarSrc = avatarUrl;
+    /** @type {boolean} */
     this.showImageCaption = showImageCaption;
+    /** @type {AppLike | null} */
     this.app = app; // Obsidian App instance
+    /** @type {string} */
     this.sourcePath = sourcePath; // Current file path for relative resolution
+    /** @type {MarkdownItLike | null} */
     this.md = null;
+    /** @type {HighlightJsLike | null} */
     this.hljs = null;
   }
 
+  /**
+   * @returns {Promise<void>}
+   */
   async initMarkdownIt() {
     if (this.md) return;
-    if (typeof markdownit === 'undefined') throw new Error('markdown-it 未加载');
-    this.hljs = typeof hljs !== 'undefined' ? hljs : null;
-    this.md = markdownit({ html: true, breaks: true, linkify: true, typographer: true });
+    const markdownIt = getRuntimeDependency('markdownit');
+    if (typeof markdownIt === 'undefined') throw new Error('markdown-it 未加载');
+    this.hljs = /** @type {HighlightJsLike | null} */ (getRuntimeDependency('hljs') || null);
+    const markdownItFactory = /** @type {(options: Record<string, unknown>) => MarkdownItLike} */ (markdownIt);
+    this.md = markdownItFactory({ html: true, breaks: true, linkify: true, typographer: true });
 
     // Enable MathJax if available
-    if (window.ObsidianWechatMath) {
-      window.ObsidianWechatMath(this.md);
+    const runtimeGlobal = typeof window !== 'undefined' ? /** @type {Record<string, unknown>} */ (window) : APPLE_CONVERTER_GLOBAL;
+    if (typeof runtimeGlobal.ObsidianWechatMath === 'function') {
+      const mathPlugin = /** @type {(markdownIt: MarkdownItLike) => void} */ (runtimeGlobal.ObsidianWechatMath);
+      mathPlugin(this.md);
     }
 
     this.setupRenderRules();
@@ -117,32 +286,57 @@ window.AppleStyleConverter = class AppleStyleConverter {
 
   reinit() { this.md = null; }
 
+  /**
+   * @param {ConverterConfigLike} config
+   */
   updateConfig(config) {
     if (config.showImageCaption !== undefined) {
-      this.showImageCaption = config.showImageCaption;
+      this.showImageCaption = Boolean(config.showImageCaption);
     }
     if (config.avatarUrl !== undefined) {
-      this.avatarUrl = config.avatarUrl;
+      this.avatarUrl = toText(config.avatarUrl);
+      this.avatarSrc = toText(config.avatarUrl);
     }
   }
 
+  /**
+   * @param {string} path
+   */
   updateSourcePath(path) {
     this.sourcePath = path;
   }
 
+  /**
+   * @param {string} src
+   * @returns {string}
+   */
   resolveImagePath(src) {
     if (!this.app) return src;
     // IF remote url, bypass
-    if (/^(https?:\/\/|data:)/i.test(src)) return src;
+    if (/^(https?:\/\/|data:|app:\/\/|capacitor:\/\/)/i.test(src)) return src;
 
     try {
       // Markdown-it might encode the URL (e.g. %20 for space), but Obsidian expects decoded paths
-      const linkPath = decodeURI(src);
+      const linkPath = safeDecodeUri(src);
       const sourcePath = this.sourcePath;
       // Resolve using Obsidian's standard API
-      const tFile = this.app.metadataCache.getFirstLinkpathDest(linkPath, sourcePath);
+      const tFile = this.app.metadataCache?.getFirstLinkpathDest?.(linkPath, sourcePath);
       if (tFile) {
-        return this.app.vault.getResourcePath(tFile);
+        return this.app.vault?.getResourcePath?.(tFile) || src;
+      }
+
+      const vault = this.app.vault;
+      const candidates = [];
+      const normalized = normalizeVaultPath(linkPath);
+      if (normalized) candidates.push(normalized);
+      const noteDir = getVaultDirname(sourcePath);
+      if (normalized && noteDir) candidates.push(joinVaultPath(noteDir, normalized));
+
+      for (const candidate of Array.from(new Set(candidates))) {
+        const file = vault?.getAbstractFileByPath?.(candidate);
+        if (file?.extension) {
+          return vault?.getResourcePath?.(file) || src;
+        }
       }
     } catch (e) {
       console.error('Image resolution failed:', src, e);
@@ -150,15 +344,21 @@ window.AppleStyleConverter = class AppleStyleConverter {
     return src;
   }
 
+  /**
+   * @returns {void}
+   */
   setupRenderRules() {
+    if (!this.md) return;
+    const rules = this.md.renderer.rules;
     // Callout & Blockquote 智能检测渲染
-    this.md.renderer.rules.blockquote_open = (tokens, idx, options, env, self) => {
+    rules.blockquote_open = (tokens, idx, options, env = {}, _self) => {
       // 查找 blockquote 内的第一个文本内容，检测是否为 callout 语法
       const calloutInfo = this.detectCallout(tokens, idx);
 
       // 使用栈管理 callout 状态，支持嵌套
-      if (!env._calloutStack) env._calloutStack = [];
-      env._calloutStack.push(calloutInfo);
+      const calloutStack = getCalloutStack(env._calloutStack);
+      env._calloutStack = calloutStack;
+      calloutStack.push(calloutInfo);
 
       if (calloutInfo) {
         return this.renderCalloutOpen(calloutInfo);
@@ -167,49 +367,152 @@ window.AppleStyleConverter = class AppleStyleConverter {
       return `<blockquote style="${this.getInlineStyle('blockquote')}">`;
     };
 
-    this.md.renderer.rules.blockquote_close = (tokens, idx, options, env, self) => {
-      const calloutInfo = env._calloutStack ? env._calloutStack.pop() : null;
+    rules.blockquote_close = (tokens, idx, options, env = {}, _self) => {
+      const calloutStack = getCalloutStack(env._calloutStack);
+      const calloutInfo = calloutStack.length ? calloutStack.pop() : null;
       if (calloutInfo) {
         return `</section></section>`; // 关闭内容区和外层容器
       }
       return `</blockquote>`;
     };
 
-    this.md.renderer.rules.paragraph_open = (tokens, idx) => {
-      if (tokens[idx].hidden) return '';
+    rules.paragraph_open = (tokens, idx) => {
+      if (getToken(tokens, idx).hidden) return '';
       return `<p style="${this.getInlineStyle('p')}">`;
     };
 
-    this.md.renderer.rules.paragraph_close = (tokens, idx) => {
-      if (tokens[idx].hidden) return '';
+    rules.paragraph_close = (tokens, idx) => {
+      if (getToken(tokens, idx).hidden) return '';
       return `</p>`;
     };
-    this.md.renderer.rules.heading_open = (tokens, idx) => `<${tokens[idx].tag} style="${this.getInlineStyle(tokens[idx].tag)}">`;
-    this.md.renderer.rules.bullet_list_open = () => `<ul style="${this.getInlineStyle('ul')}">`;
-    this.md.renderer.rules.ordered_list_open = () => `<ol style="${this.getInlineStyle('ol')}">`;
-    this.md.renderer.rules.list_item_open = () => `<li style="${this.getInlineStyle('li')}">`;
+    rules.heading_open = (tokens, idx) => {
+      const tag = getToken(tokens, idx).tag || 'h1';
+      return `<${tag} style="${this.getInlineStyle(tag)}">`;
+    };
+    rules.bullet_list_open = () => `<ul style="${this.getInlineStyle('ul')}">`;
+    rules.ordered_list_open = () => `<ol style="${this.getInlineStyle('ol')}">`;
+    /**
+     * @param {MarkdownTokenLike[]} tokens
+     * @param {number} idx
+     * @returns {{ isTask: boolean, checked: boolean, token: MarkdownTokenLike } | null}
+     */
+    const isTaskListItem = (tokens, idx) => {
+      for (let i = idx + 1; i < tokens.length; i++) {
+        const token = getToken(tokens, i);
+        if (token.type === 'list_item_close') break;
+        if (token.type === 'inline') {
+          const content = toText(token.content);
+          if (content.startsWith('☑') || content.startsWith('□') || content.startsWith('☐')) {
+            return {
+              isTask: true,
+              checked: content.startsWith('☑'),
+              token: token
+            };
+          }
+          break;
+        }
+      }
+      return null;
+    };
 
-    this.md.renderer.rules.code_inline = (tokens, idx) =>
-      `<code style="${this.getInlineStyle('code')}">${this.escapeHtml(tokens[idx].content)}</code>`;
+    rules.list_item_open = (tokens, idx) => {
+      const taskInfo = isTaskListItem(tokens, idx);
+      if (taskInfo) {
+        const inlineToken = taskInfo.token;
+        const themeColor = this.theme.getThemeColorValue() || '#576b95';
+        
+        if (inlineToken.children && inlineToken.children.length > 0) {
+          const firstChild = inlineToken.children[0];
+          const firstContent = toText(firstChild.content);
+          if (firstChild.type === 'text' && (firstContent.startsWith('☑') || firstContent.startsWith('□') || firstContent.startsWith('☐'))) {
+            const content = firstContent;
+            const restText = content.slice(1);
+            
+            /** @type {MarkdownTokenLike[]} */
+            const newChildren = [];
+            
+            if (taskInfo.checked) {
+              newChildren.push({
+                type: 'html_inline',
+                content: `<span style="display: inline-block; font-size: 1.15em; font-weight: bold; margin-right: 6px; vertical-align: -0.05em; color: #8f959e; line-height: 1;">☑</span>`
+              });
+              newChildren.push({
+                type: 'html_inline',
+                content: `<span style="text-decoration: line-through; color: #8f959e;">`
+              });
+              newChildren.push({
+                type: 'text',
+                content: restText.trimStart()
+              });
+              for (let j = 1; j < inlineToken.children.length; j++) {
+                newChildren.push(inlineToken.children[j]);
+              }
+              newChildren.push({
+                type: 'html_inline',
+                content: `</span>`
+              });
+            } else {
+              newChildren.push({
+                type: 'html_inline',
+                content: `<span style="display: inline-block; font-size: 1.15em; font-weight: bold; margin-right: 6px; vertical-align: -0.05em; color: ${themeColor}; line-height: 1;">☐</span>`
+              });
+              newChildren.push({
+                type: 'text',
+                content: restText.trimStart()
+              });
+              for (let j = 1; j < inlineToken.children.length; j++) {
+                newChildren.push(inlineToken.children[j]);
+              }
+            }
+            inlineToken.children = newChildren;
+          }
+        } else {
+          const content = toText(inlineToken.content);
+          const restText = content.slice(1);
+          if (taskInfo.checked) {
+            inlineToken.content = `<span style="display: inline-block; font-size: 1.15em; font-weight: bold; margin-right: 6px; vertical-align: -0.05em; color: #8f959e; line-height: 1;">☑</span><span style="text-decoration: line-through; color: #8f959e;">${restText.trimStart()}</span>`;
+          } else {
+            inlineToken.content = `<span style="display: inline-block; font-size: 1.15em; font-weight: bold; margin-right: 6px; vertical-align: -0.05em; color: ${themeColor}; line-height: 1;">☐</span>${restText.trimStart()}`;
+          }
+        }
+        
+        return `<li style="${this.getInlineStyle('li-task')}">`;
+      }
+      return `<li style="${this.getInlineStyle('li')}">`;
+    };
 
-    this.md.renderer.rules.fence = (tokens, idx) => {
-      const content = tokens[idx].content;
-      const lang = tokens[idx].info || 'text';
+    rules.code_inline = (tokens, idx) =>
+      `<code style="${this.getInlineStyle('code')}">${this.escapeHtml(toText(getToken(tokens, idx).content))}</code>`;
+
+    rules.fence = (tokens, idx) => {
+      const token = getToken(tokens, idx);
+      const content = toText(token.content);
+      const lang = toText(token.info) || 'text';
       return this.createCodeBlock(content, lang);
     };
 
-    this.md.renderer.rules.link_open = (tokens, idx) => {
-      const href = tokens[idx].attrGet('href');
+    rules.link_open = (tokens, idx) => {
+      const href = getToken(tokens, idx).attrGet?.('href') || '';
       const safeHref = this.validateLink(href);
-      return `<a href="${safeHref}" style="${this.getInlineStyle('a')}">`;
+      const nextToken = getToken(tokens, idx + 1);
+      const closeToken = getToken(tokens, idx + 2);
+      const visibleText = nextToken && nextToken.type === 'text'
+        ? toText(nextToken.content).trim()
+        : '';
+      const isUrlTextLink = closeToken?.type === 'link_close'
+        && /^https?:\/\//i.test(visibleText || href);
+      const urlTextStyle = isUrlTextLink
+        ? '; display:block; max-width:100%; margin:4px 0; line-height:1.55; word-break:break-all; overflow-wrap:anywhere;'
+        : '';
+      return `<a href="${safeHref}" style="${this.getInlineStyle('a')}${urlTextStyle}">`;
     };
-    this.md.renderer.rules.strong_open = () => `<strong style="${this.getInlineStyle('strong')}">`;
-    this.md.renderer.rules.em_open = () => `<em style="${this.getInlineStyle('em')}">`;
-    this.md.renderer.rules.s_open = () => `<del style="${this.getInlineStyle('del')}">`;
+    rules.strong_open = () => `<strong style="${this.getInlineStyle('strong')}">`;
+    rules.em_open = () => `<em style="${this.getInlineStyle('em')}">`;
+    rules.s_open = () => `<del style="${this.getInlineStyle('del')}">`;
 
-    this.md.renderer.rules.image = (tokens, idx) => {
-      let src = tokens[idx].attrGet('src');
-      const alt = tokens[idx].content;
+    rules.image = (tokens, idx) => {
+      let src = getToken(tokens, idx).attrGet?.('src') || '';
+      const alt = toText(getToken(tokens, idx).content);
 
       // Resolve Local Path for Preview
       src = this.resolveImagePath(src);
@@ -246,14 +549,19 @@ window.AppleStyleConverter = class AppleStyleConverter {
       }
     };
 
-    this.md.renderer.rules.hr = () => `<hr style="${this.getInlineStyle('hr')}">`;
-    this.md.renderer.rules.table_open = (tokens, idx) => `<section style="${this.getInlineStyle('table-wrapper')}"><table style="${this.getTableStyle(tokens, idx)}">`;
-    this.md.renderer.rules.table_close = () => `</table></section>`;
-    this.md.renderer.rules.thead_open = () => `<thead style="${this.getInlineStyle('thead')}">`;
-    this.md.renderer.rules.th_open = () => `<th style="${this.getInlineStyle('th')}">`;
-    this.md.renderer.rules.td_open = () => `<td style="${this.getInlineStyle('td')}">`;
+    rules.hr = () => `<hr style="${this.getInlineStyle('hr')}">`;
+    rules.table_open = (tokens, idx) => `<section style="${this.getInlineStyle('table-wrapper')}"><table style="${this.getTableStyle(tokens, idx)}">`;
+    rules.table_close = () => `</table></section>`;
+    rules.thead_open = () => `<thead style="${this.getInlineStyle('thead')}">`;
+    rules.th_open = () => `<th style="${this.getInlineStyle('th')}">`;
+    rules.td_open = () => `<td style="${this.getInlineStyle('td')}">`;
   }
 
+  /**
+   * @param {MarkdownTokenLike[]} tokens
+   * @param {number} tableIdx
+   * @returns {number}
+   */
   getTableColumnCount(tokens, tableIdx) {
     if (!Array.isArray(tokens)) return 0;
 
@@ -283,6 +591,11 @@ window.AppleStyleConverter = class AppleStyleConverter {
     return count;
   }
 
+  /**
+   * @param {MarkdownTokenLike[]} tokens
+   * @param {number} tableIdx
+   * @returns {number}
+   */
   getTableMinWidth(tokens, tableIdx) {
     const columns = this.getTableColumnCount(tokens, tableIdx);
     if (!columns) return 720;
@@ -290,6 +603,11 @@ window.AppleStyleConverter = class AppleStyleConverter {
     return Math.max(360, Math.min(1200, width));
   }
 
+  /**
+   * @param {MarkdownTokenLike[]} tokens
+   * @param {number} tableIdx
+   * @returns {string}
+   */
   getTableStyle(tokens, tableIdx) {
     const baseStyle = this.getInlineStyle('table');
     const minWidth = this.getTableMinWidth(tokens, tableIdx);
@@ -307,17 +625,18 @@ window.AppleStyleConverter = class AppleStyleConverter {
   /**
    * 检测 blockquote 是否为 Callout 语法
    * 并清理 marker 标识符
-   * @param {Array} tokens - markdown-it tokens
+   * @param {MarkdownTokenLike[]} tokens - markdown-it tokens
    * @param {number} idx - blockquote_open 的索引
-   * @returns {Object|null} - callout 信息 { type, title, icon, label } 或 null
+   * @returns {CalloutInfoLike|null} - callout 信息 { type, title, icon, label } 或 null
    */
   detectCallout(tokens, idx) {
     // 查找 blockquote 内的第一个 inline token
     for (let i = idx + 1; i < tokens.length; i++) {
-      if (tokens[i].type === 'blockquote_close') break;
-      if (tokens[i].type === 'inline' && tokens[i].content) {
+      const token = getToken(tokens, i);
+      if (token.type === 'blockquote_close') break;
+      if (token.type === 'inline' && token.content) {
         // 只取第一行内容进行匹配
-        const firstLine = tokens[i].content.split('\n')[0];
+        const firstLine = toText(token.content).split('\n')[0];
         // 支持自定义 callout 类型（包含中文、连字符等），例如 [!学习研究] / [!custom-type]
         const match = firstLine.match(/^\[!\s*([^\]\r\n]+?)\s*\](?:\s+(.*))?/);
         if (match) {
@@ -331,27 +650,27 @@ window.AppleStyleConverter = class AppleStyleConverter {
 
           // --- 在 Token 阶段清理 Marker ---
           // 1. 更新 content：移除包含 marker 的第一行
-          const lines = tokens[i].content.split('\n');
+          const lines = toText(token.content).split('\n');
           lines.shift();
-          tokens[i].content = lines.join('\n');
+          token.content = lines.join('\n');
 
           // 2. 更新 children：同步移除第一行对应的 tokens
-          if (tokens[i].children) {
-            const breakIdx = tokens[i].children.findIndex(c => c.type === 'softbreak' || c.type === 'hardbreak');
+          if (token.children) {
+            const breakIdx = token.children.findIndex(c => c.type === 'softbreak' || c.type === 'hardbreak');
             if (breakIdx !== -1) {
               // 移除第一个换行符及其之前的所有内容
-              tokens[i].children = tokens[i].children.slice(breakIdx + 1);
+              token.children = token.children.slice(breakIdx + 1);
             } else {
               // 只有一行，直接清空
-              tokens[i].children = [];
+              token.children = [];
             }
           }
 
           // 3. 如果该段落变为空（说明 marker 独占一行），隐藏该段落容器
-          if (tokens[i].content.trim() === '') {
-            if (i > 0 && tokens[i-1].type === 'paragraph_open') tokens[i-1].hidden = true;
-            tokens[i].hidden = true; // 隐藏 inline token 本身
-            if (i < tokens.length - 1 && tokens[i+1].type === 'paragraph_close') tokens[i+1].hidden = true;
+          if (toText(token.content).trim() === '') {
+            if (i > 0 && getToken(tokens, i - 1).type === 'paragraph_open') getToken(tokens, i - 1).hidden = true;
+            token.hidden = true; // 隐藏 inline token 本身
+            if (i < tokens.length - 1 && getToken(tokens, i + 1).type === 'paragraph_close') getToken(tokens, i + 1).hidden = true;
           }
 
           return {
@@ -369,7 +688,7 @@ window.AppleStyleConverter = class AppleStyleConverter {
 
   /**
    * 渲染 Callout 开始标签
-   * @param {Object} calloutInfo - { type, title, icon }
+   * @param {CalloutInfoLike} calloutInfo - { type, title, icon }
    * @returns {string} - HTML 字符串
    */
   renderCalloutOpen(calloutInfo) {
@@ -418,14 +737,21 @@ window.AppleStyleConverter = class AppleStyleConverter {
       background: ${accentColor}0D;
     `.replace(/\s+/g, ' ').trim();
 
-    return `<section style="${containerStyle}">
-      <section style="${headerStyle}">
-        <span style="${iconStyle}">${calloutInfo.icon}</span>
-        <span style="${titleStyle}">${safeTitle}</span>
+    return `<section class="owc-callout" style="${containerStyle}">
+      <section class="owc-callout-title" style="${headerStyle}">
+        <span class="owc-callout-icon" style="${iconStyle}">${calloutInfo.icon}</span>
+        <span class="owc-callout-title-text" style="${titleStyle}">${safeTitle}</span>
       </section>
-      <section style="${contentStyle}">`;
+      <section class="owc-callout-content" style="${contentStyle}">`;
   }
 
+  /**
+   * @param {CalloutInfoLike} calloutInfo
+   * @param {string} themeColor
+   * @param {ThemeSizesLike} sizes
+   * @param {string} font
+   * @returns {string}
+   */
   renderCalloutOpenNeutral(calloutInfo, themeColor, sizes, font) {
     const safeTitle = this.escapeHtml(String(calloutInfo.title ?? ''));
     const accentColor = resolveCalloutSemanticColor(calloutInfo?.type, themeColor);
@@ -460,32 +786,42 @@ window.AppleStyleConverter = class AppleStyleConverter {
       background: #f9f9f9;
     `.replace(/\s+/g, ' ').trim();
 
-    return `<section style="${containerStyle}">
-      <section style="${headerStyle}">
-        <span style="${iconStyle}">${calloutInfo.icon}</span>
-        <span style="${titleStyle}">${safeTitle}</span>
+    return `<section class="owc-callout" style="${containerStyle}">
+      <section class="owc-callout-title" style="${headerStyle}">
+        <span class="owc-callout-icon" style="${iconStyle}">${calloutInfo.icon}</span>
+        <span class="owc-callout-title-text" style="${titleStyle}">${safeTitle}</span>
       </section>
-      <section style="${contentStyle}">`;
+      <section class="owc-callout-content" style="${contentStyle}">`;
   }
 
+  /**
+   * @param {string} code
+   * @param {string} lang
+   * @returns {string}
+   */
   highlightCode(code, lang) {
     if (!this.hljs) return this.escapeHtml(code);
     try {
       if (lang && this.hljs.getLanguage(lang)) return this.hljs.highlight(code, { language: lang }).value;
       return this.hljs.highlightAuto(code).value;
-    } catch (e) { return this.escapeHtml(code); }
+    } catch { return this.escapeHtml(code); }
   }
 
   /**
    * 格式化高亮代码（参考 wechat-tool formatHighlightedCode）
    */
+  /**
+   * @param {string} html
+   * @param {boolean} [preserveNewlines]
+   * @returns {string}
+   */
   formatHighlightedCode(html, preserveNewlines = false) {
     let formatted = html;
     // 将 span 之间的空格移到 span 内部
     formatted = formatted.replace(/(<span[^>]*>[^<]*<\/span>)(\s+)(<span[^>]*>[^<]*<\/span>)/g,
-      (_, span1, spaces, span2) => span1 + span2.replace(/^(<span[^>]*>)/, `$1${spaces}`));
+      (_match, span1, spaces, span2) => String(span1) + String(span2).replace(/^(<span[^>]*>)/, `$1${String(spaces)}`));
     formatted = formatted.replace(/(\s+)(<span[^>]*>)/g,
-      (_, spaces, span) => span.replace(/^(<span[^>]*>)/, `$1${spaces}`));
+      (_match, spaces, span) => String(span).replace(/^(<span[^>]*>)/, `$1${String(spaces)}`));
     // 替换制表符为4个空格
     formatted = formatted.replace(/\t/g, '    ');
 
@@ -495,14 +831,19 @@ window.AppleStyleConverter = class AppleStyleConverter {
       formatted = formatted
         .replace(/\r\n/g, '<br/>')
         .replace(/\n/g, '<br/>')
-        .replace(/(>[^<]+)|(^[^<]+)/g, str => str.replace(/\s/g, '&nbsp;'));
+        .replace(/(>[^<]+)|(^[^<]+)/g, str => String(str).replace(/\s/g, '&nbsp;'));
     } else {
-      formatted = formatted.replace(/(>[^<]+)|(^[^<]+)/g, str => str.replace(/\s/g, '&nbsp;'));
+      formatted = formatted.replace(/(>[^<]+)|(^[^<]+)/g, str => String(str).replace(/\s/g, '&nbsp;'));
     }
     return formatted;
   }
 
+  /**
+   * @param {string} html
+   * @returns {string}
+   */
   inlineHighlightStyles(html) {
+    /** @type {Record<string, string>} */
     const map = {
       'hljs-keyword': 'color:#ff7b72 !important;', 'hljs-built_in': 'color:#ffa657 !important;',
       'hljs-type': 'color:#ffa657 !important;', 'hljs-literal': 'color:#79c0ff !important;',
@@ -522,7 +863,7 @@ window.AppleStyleConverter = class AppleStyleConverter {
 
     // 改进：处理 class 属性包含多个类名的情况
     return html.replace(/class="([^"]*)"/g, (match, classNames) => {
-      const classes = classNames.split(/\s+/);
+      const classes = String(classNames || '').split(/\s+/);
       let styles = '';
       for (const cls of classes) {
         if (map[cls]) {
@@ -536,6 +877,11 @@ window.AppleStyleConverter = class AppleStyleConverter {
   /**
    * 创建代码块 - 照抄 wechat-tool 的实现
    * 使用 wechat-tool 的颜色和结构
+   */
+  /**
+   * @param {string} content
+   * @param {string} lang
+   * @returns {string}
    */
   createCodeBlock(content, lang) {
     const showMac = this.theme.macCodeBlock;
@@ -551,12 +897,10 @@ window.AppleStyleConverter = class AppleStyleConverter {
     while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
 
     // Mac 头部
-    // 关键修正：使用 section 而不是 div，增强在公众号中的兼容性
-    const macHeader = showMac ? `<section style="display:block !important;background:${barBackground} !important;padding:6px 10px 6px 10px !important;border:none !important;border-bottom:1px solid ${borderColor} !important;border-radius:8px 8px 0 0 !important;line-height:1 !important;">
-      <span style="display:inline-block !important;width:9px !important;height:9px !important;border-radius:50% !important;background:#ff5f57 !important;margin-right:7px !important;font-size:0 !important;line-height:0 !important;vertical-align:top !important;"></span>
-      <span style="display:inline-block !important;width:9px !important;height:9px !important;border-radius:50% !important;background:#ffbd2e !important;margin-right:7px !important;font-size:0 !important;line-height:0 !important;vertical-align:top !important;"></span>
-      <span style="display:inline-block !important;width:9px !important;height:9px !important;border-radius:50% !important;background:#28c840 !important;font-size:0 !important;line-height:0 !important;vertical-align:top !important;"></span>
-    </section>` : '';
+    // 关键修正：
+    // 1. 各红绿灯圆点使用 section 标签而非 span 标签。微信公众号草稿箱 API 会过滤没有文字内容的 span，但对 section 块级容器属性（width/height/border-radius/background）全量保留。
+    // 2. 标签之间不留 HTML 空格/换行，消除间隙，使红绿灯在 Obsidian 预览、剪贴板复制及草稿箱同步中均完美保持 10px 紧凑精致对齐。
+    const macHeader = showMac ? `<section style="display:block !important;background:${barBackground} !important;padding:8px 12px 6px 12px !important;border:none !important;border-bottom:1px solid ${borderColor} !important;border-radius:8px 8px 0 0 !important;line-height:1 !important;font-size:0 !important;"><section style="display:inline-block !important;width:10px !important;height:10px !important;border-radius:50% !important;background:#ff5f57 !important;margin-right:6px !important;vertical-align:middle !important;"></section><section style="display:inline-block !important;width:10px !important;height:10px !important;border-radius:50% !important;background:#ffbd2e !important;margin-right:6px !important;vertical-align:middle !important;"></section><section style="display:inline-block !important;width:10px !important;height:10px !important;border-radius:50% !important;background:#28c840 !important;vertical-align:middle !important;"></section></section>` : '';
 
     // 统一行高和字体变量
     const lineHeight = '1.75';
@@ -586,15 +930,15 @@ window.AppleStyleConverter = class AppleStyleConverter {
       // 这样右侧就是一个单一的文本流，高度严格由 line-height 控制
       const codeInnerHtml = highlightedLines.join('<br/>');
 
-      const codeLinesHtml = `<section style="white-space:nowrap !important;display:inline-block !important;min-width:100% !important;line-height:${lineHeight} !important;font-size:13px !important;">${codeInnerHtml}</section>`;
+      const codeLinesHtml = `<section class="code-lines" style="white-space:nowrap !important;display:inline-block !important;width:max-content !important;min-width:100% !important;max-width:none !important;line-height:${lineHeight} !important;font-size:13px !important;">${codeInnerHtml}</section>`;
 
       // 行号列容器样式
       const lineNumberColumnStyles = `text-align:right !important;padding:12px 0 12px 0 !important;border-right:1px solid rgba(255,255,255,0.1) !important;user-select:none !important;background:transparent !important;flex:0 0 auto !important;min-width:3.5em !important;margin:0 !important;`;
 
       // 注意 flex 容器的 padding 0，内部 padding 分别在 lineNumberColumn 和 code section
-      codeHtml = `<section style="display:flex !important;align-items:flex-start !important;overflow-x:hidden !important;overflow-y:visible !important;width:100% !important;padding:0 !important;margin:0 !important;">
-        <section style="${lineNumberColumnStyles}">${lineNumbersHtml}</section>
-        <section style="flex:1 1 auto !important;overflow-x:auto !important;overflow-y:visible !important;padding:12px 12px 12px 16px !important;margin:0 !important;min-width:0 !important;">${codeLinesHtml}</section>
+      codeHtml = `<section class="code-with-line-numbers" style="display:flex !important;align-items:flex-start !important;overflow-x:hidden !important;overflow-y:visible !important;width:100% !important;max-width:100% !important;padding:0 !important;margin:0 !important;box-sizing:border-box !important;">
+        <section class="code-line-numbers" style="${lineNumberColumnStyles}">${lineNumbersHtml}</section>
+        <section class="code-scroll" style="flex:1 1 0% !important;width:0 !important;max-width:calc(100% - 3.5em) !important;overflow-x:scroll !important;overflow-y:visible !important;-webkit-overflow-scrolling:touch !important;scrollbar-gutter:stable !important;scrollbar-color:rgba(255,255,255,0.58) rgba(255,255,255,0.18) !important;padding:12px 12px 16px 16px !important;margin:0 !important;min-width:0 !important;box-sizing:border-box !important;">${codeLinesHtml}</section>
       </section>`;
     } else {
       // 无行号
@@ -603,26 +947,39 @@ window.AppleStyleConverter = class AppleStyleConverter {
       // preserveNewlines=true -> 包含 <br>
       const formatted = this.formatHighlightedCode(styled, true);
       // 改动：white-space: nowrap !important
-      const codeLinesHtml = `<section style="white-space:nowrap !important;display:inline-block !important;min-width:100% !important;word-break:keep-all !important;overflow-wrap:normal !important;line-height:${lineHeight} !important;font-size:13px !important;margin:0 !important;">${formatted}</section>`;
+      const codeLinesHtml = `<section class="code-lines" style="white-space:nowrap !important;display:inline-block !important;min-width:100% !important;word-break:keep-all !important;overflow-wrap:normal !important;line-height:${lineHeight} !important;font-size:13px !important;margin:0 !important;">${formatted}</section>`;
 
-      codeHtml = `<section style="display:flex !important;align-items:flex-start !important;overflow-x:hidden !important;overflow-y:visible !important;width:100% !important;padding:0 !important;margin:0 !important;">
-        <section style="flex:1 1 auto !important;overflow-x:auto !important;overflow-y:visible !important;padding:12px !important;min-width:0 !important;margin:0 !important;">${codeLinesHtml}</section>
+      codeHtml = `<section class="code-without-line-numbers" style="display:flex !important;align-items:flex-start !important;overflow-x:hidden !important;overflow-y:visible !important;width:100% !important;padding:0 !important;margin:0 !important;">
+        <section class="code-scroll" style="flex:1 1 auto !important;width:100% !important;max-width:100% !important;overflow-x:scroll !important;overflow-y:visible !important;scrollbar-gutter:stable !important;scrollbar-color:rgba(255,255,255,0.58) rgba(255,255,255,0.18) !important;padding:12px 12px 16px 12px !important;min-width:0 !important;margin:0 !important;box-sizing:border-box !important;">${codeLinesHtml}</section>
       </section>`;
     }
 
     // 外层容器
     return `<section class="code-snippet__fix" style="width:100% !important;margin:12px 0 !important;background:${background} !important;border:1px solid ${borderColor} !important;border-radius:8px !important;overflow:hidden !important;box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;display:block !important;">
 ${macHeader}
-<section style="padding:0 !important;border:none !important;background:${background} !important;color:${color} !important;font-family:'SF Mono',Consolas,Monaco,monospace !important;font-size:13px !important;line-height:${lineHeight} !important;white-space:nowrap !important;overflow-x:auto !important;display:block !important;">
-<pre style="margin:0 !important;padding:0 !important;background:${background} !important;font-family:inherit !important;font-size:13px !important;line-height:inherit !important;color:${color} !important;white-space:nowrap !important;overflow-x:visible !important;display:inline-block !important;min-width:100% !important;">${codeHtml}</pre>
+<section style="padding:0 !important;border:none !important;background:${background} !important;color:${color} !important;font-family:'SF Mono',Consolas,Monaco,monospace !important;font-size:13px !important;line-height:${lineHeight} !important;white-space:normal !important;overflow-x:hidden !important;display:block !important;">
+<pre style="margin:0 !important;padding:0 !important;background:${background} !important;font-family:inherit !important;font-size:13px !important;line-height:inherit !important;color:${color} !important;white-space:normal !important;overflow-x:visible !important;display:block !important;width:100% !important;max-width:100% !important;">${codeHtml}</pre>
 </section>
 </section>`;
   }
 
+  /**
+   * @param {string} tagName
+   * @returns {string}
+   */
   getInlineStyle(tagName) { return this.theme.getStyle(tagName); }
+
+  /**
+   * @param {string} md
+   * @returns {string}
+   */
   stripFrontmatter(md) { return md.replace(/^---\n[\s\S]*?\n---\n?/, ''); }
 
 
+  /**
+   * @param {string} markdown
+   * @returns {Promise<string>}
+   */
   async convert(markdown) {
     if (!this.md) await this.initMarkdownIt();
 
@@ -633,14 +990,16 @@ ${macHeader}
     // Pre-process: Convert Wiki-links ![[...]] to standard images ![](...)
     // Regex: ![[path|alt]] or ![[path]]
     // Fix: Use more robust regex preventing greedy capture and encoding URI for paths with spaces
-    markdown = markdown.replace(/!\[\[([^\[\]|]+)(?:\|([^\[\]]+))?\]\]/g, (match, path, alt) => {
+    markdown = markdown.replace(/!\[\[([^[\]|]+)(?:\|([^[\]]+))?\]\]/g, (_match, path, alt) => {
+      const imagePath = String(path || '');
+      const imageAlt = typeof alt === 'string' ? alt : '';
       // Must encodeURI to handle spaces in filenames which are valid in WikiLinks but break standard Markdown images
       // trimmed path to avoid leading/trailing spaces breaking the link
-      if (!alt) {
-        const filename = path.trim().split('/').pop().replace(/\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i, '') || path.trim();
-        return `![${filename}](${encodeURI(path.trim())})`;
+      if (!imageAlt) {
+        const filename = (imagePath.trim().split('/').pop() || '').replace(/\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i, '') || imagePath.trim();
+        return `![${filename}](${encodeURI(imagePath.trim())})`;
       }
-      return `![${alt}](${encodeURI(path.trim())})`;
+      return `![${imageAlt}](${encodeURI(imagePath.trim())})`;
     });
 
 
@@ -651,15 +1010,23 @@ ${macHeader}
     html = this.removeBlockquoteParagraphMargins(html); // Fix: Remove margins from <p> inside <blockquote> for vertical centering
     html = this.fixMathJaxTags(html); // Fix: Replace <mjx-container> with WeChat-compatible tags
     html = this.sanitizeHtml(html); // Final security pass: Neutralize XSS and dangerous tags
-    return `<section style="${this.getInlineStyle('section')}">${html}</section>`;
+    return `<section class="owc-article-root" style="${this.getInlineStyle('section')}">${html}</section>`;
   }
 
+  /**
+   * @param {string} html
+   * @returns {string}
+   */
   fixMathJaxTags(html) {
     if (!html.includes('mjx-container')) return html;
 
     // Fix: Remove assistive MathML (hidden text that shows up in WeChat)
     html = html.replace(/<mjx-assistive-mml[^>]*>[\s\S]*?<\/mjx-assistive-mml>/gi, '');
 
+    /**
+     * @param {string} markup
+     * @returns {string}
+     */
     const normalizeMathPositionStyles = (markup) => String(markup || '').replace(
       /style="([^"]*)"/gi,
       (_match, styleText) => {
@@ -667,7 +1034,7 @@ ${macHeader}
         let topValue = null;
         style = style.replace(/(^|;)\s*top\s*:\s*([^;"]+)\s*;?/i, (_m, prefix, value) => {
           topValue = String(value || '').trim();
-          return prefix || '';
+          return String(prefix || '');
         });
         if (!topValue) return `style="${style}"`;
 
@@ -683,19 +1050,27 @@ ${macHeader}
       }
     );
 
+    /**
+     * @param {string} markup
+     * @param {string} extraStyle
+     * @returns {string}
+     */
     const appendSvgStyle = (markup, extraStyle) => String(markup || '').replace(/<svg([^>]*)>/i, (_m, svgAttrs) => {
-      if (svgAttrs.includes('style="')) {
-        return `<svg${svgAttrs.replace('style="', `style="${extraStyle}`)}>`;
+      const attrs = String(svgAttrs || '');
+      if (attrs.includes('style="')) {
+        return `<svg${attrs.replace('style="', `style="${extraStyle}`)}>`;
       }
-      return `<svg${svgAttrs} style="${extraStyle}">`;
+      return `<svg${attrs} style="${extraStyle}">`;
     });
 
     // Replace <mjx-container> with <section> (block) or <span> (inline)
     // WeChat strips custom tags like mjx-container but keeps SVG content
-    return html.replace(/<mjx-container([^>]*)>(.*?)<\/mjx-container>/gs, (match, attrs, content) => {
+    return html.replace(/<mjx-container([^>]*)>(.*?)<\/mjx-container>/gs, (_match, attrs, content) => {
+      const containerAttrs = String(attrs || '');
+      let mathContent = String(content || '');
       // Check for block display mode
       // MathJax 3 usually adds display="true" or class="MathJax CtxtMenu_Attached_0" with separate style
-      const isBlock = attrs.includes('display="true"') || attrs.includes('display: true');
+      const isBlock = containerAttrs.includes('display="true"') || containerAttrs.includes('display: true');
 
       const tag = isBlock ? 'section' : 'span';
 
@@ -705,27 +1080,37 @@ ${macHeader}
         ? 'display:block; width:100%; margin:1em auto; text-align:center; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch;'
         : 'display:inline-block; vertical-align:middle; transform:translateY(-0.12em); margin:0 1px; line-height:1;';
 
-      content = normalizeMathPositionStyles(content);
+      mathContent = normalizeMathPositionStyles(mathContent);
 
       // 关键修复：给块级公式的 SVG 添加 max-width: 100% 和 height: auto
       // 这样在手机上预览时，公式会按比例缩小以适应屏幕，而不是被遮挡或需要滚动
       // 这符合微信公众号的默认渲染行为
       if (isBlock) {
-        content = appendSvgStyle(content, 'display:block; margin:0 auto; max-width:100%; height:auto; ');
+        mathContent = appendSvgStyle(mathContent, 'display:block; margin:0 auto; max-width:100%; height:auto; ');
       } else {
-        content = content.replace(/vertical-align\s*:\s*[^;"]+;?/gi, '');
-        content = appendSvgStyle(content, 'display:inline-block; max-width:300vw !important; height:auto; vertical-align:middle; ');
+        mathContent = mathContent.replace(/vertical-align\s*:\s*[^;"]+;?/gi, '');
+        mathContent = appendSvgStyle(mathContent, 'display:inline-block; max-width:300vw !important; height:auto; vertical-align:middle; ');
       }
 
-      return `<${tag} data-owc-math="${isBlock ? 'block' : 'inline'}" style="${style}">${content}</${tag}>`;
+      return `<${tag} data-owc-math="${isBlock ? 'block' : 'inline'}" style="${style}">${mathContent}</${tag}>`;
     });
   }
 
+  /**
+   * @param {string} html
+   * @returns {string}
+   */
   fixListParagraphs(html) {
     const style = this.getInlineStyle('li p');
     return html.replace(/<li[^>]*>[\s\S]*?<\/li>/g, m => m.replace(/<p style="[^"]*">/g, `<p style="${style}">`));
   }
 
+  /**
+   * @param {string} styleText
+   * @param {string} property
+   * @param {string} value
+   * @returns {string}
+   */
   replaceStyleDeclaration(styleText, property, value) {
     const style = String(styleText || '');
     const declaration = `${property}: ${value}`;
@@ -743,13 +1128,19 @@ ${macHeader}
    * Keep blockquote padding in control while preserving intentional blank lines.
    * A blank line inside Markdown blockquotes renders as multiple paragraphs.
    */
+  /**
+   * @param {string} html
+   * @returns {string}
+   */
   removeBlockquoteParagraphMargins(html) {
     const containerTags = new Set([
       'blockquote', 'section', 'div', 'figure', 'figcaption', 'table', 'thead', 'tbody', 'tfoot',
       'tr', 'th', 'td', 'ul', 'ol', 'li', 'pre', 'article', 'aside',
     ]);
     const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+    /** @type {{ containerDepth: number, paragraphs: { start: number, end: number, rawTag: string, styleText: string }[] }[]} */
     const blockquoteStack = [];
+    /** @type {{ start: number, end: number, value: string }[]} */
     const replacements = [];
     const tagPattern = /<\/?([a-zA-Z][\w:-]*)(?:\s[^<>]*)?>/g;
 
@@ -833,11 +1224,20 @@ ${macHeader}
    * Browsers (and WeChat) handle this by splitting the <p> into two empty <p>s above and below,
    * causing unwanted empty lines. This regex removes the wrapping <p>.
    */
+  /**
+   * @param {string} html
+   * @returns {string}
+   */
   unwrapFigures(html) {
     // Logic: Match <p ...> <figure>...</figure> </p> and replace with <figure>...</figure>
     return html.replace(/<p[^>]*>\s*(<figure[\s\S]*?<\/figure>)\s*<\/p>/gi, '$1');
   }
 
+  /**
+   * @param {unknown} url
+   * @param {boolean} [isImage]
+   * @returns {string}
+   */
   validateLink(url, isImage = false) {
     if (!url) return '#';
     const value = String(url).trim();
@@ -859,13 +1259,17 @@ ${macHeader}
       if (safeProtocols.includes(parsed.protocol)) {
         return value;
       }
-    } catch (e) {
+    } catch {
       // Handle relative paths or Obsidian internal links that URL() can't parse
       if (value.startsWith('#') || value.startsWith('/') || !value.includes(':')) return value;
     }
     return '#'; // Block javascript: and other dangerous protocols
   }
 
+  /**
+   * @param {string} html
+   * @returns {string}
+   */
   sanitizeHtml(html) {
     // 1. Remove dangerous tags and their content
     let sanitized = html.replace(/<(script|iframe|object|embed|form|input|button|style)[^>]*>[\s\S]*?<\/\1>/gi, '');
@@ -880,28 +1284,46 @@ ${macHeader}
     sanitized = sanitized.replace(/\s+on\w+\s*=\s*[^\s>]+/gi, '');
 
     // 5. Sanitize href and src in remaining HTML tags to prevent protocol bypass (e.g. <a href="javascript:...")
-    sanitized = sanitized.replace(/<(a|img|source|video|audio|area)\b([^>]*)>/gi, (match, tag, attrs) => {
-      const isImageTag = /^(img|source)$/i.test(tag);
-      let newAttrs = attrs.replace(/\b(href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (attrMatch, attrName, qVal, sqVal, uVal) => {
-        const val = qVal || sqVal || uVal || '';
+    sanitized = sanitized.replace(/<(a|img|source|video|audio|area)\b([^>]*)>/gi, (_match, tag, attrs) => {
+      const tagName = String(tag || '');
+      const isImageTag = /^(img|source)$/i.test(tagName);
+      let newAttrs = String(attrs || '').replace(/\b(href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (_attrMatch, attrName, qVal, sqVal, uVal) => {
+        const val = String(qVal || sqVal || uVal || '');
         const safeVal = this.validateLink(val, isImageTag);
         const quote = qVal !== undefined ? '"' : (sqVal !== undefined ? "'" : '"');
         return `${attrName}=${quote}${safeVal}${quote}`;
       });
-      return `<${tag}${newAttrs}>`;
+      return `<${tagName}${newAttrs}>`;
     });
 
     return sanitized;
   }
 
+  /**
+   * @param {string} text
+   * @returns {string}
+   */
   escapeHtml(text) {
-    return text.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m]));
+    /** @type {Record<string, string>} */
+    const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+    return text.replace(/[&<>"']/g, m => entities[m] || m);
   }
 
+  /**
+   * @param {string} src
+   * @returns {string}
+   */
   extractFileName(src) {
     if (!src) return '图片';
     return src.split('/').pop().split('\\').pop().replace(/\.(jpg|jpeg|png|gif|webp|svg|bmp)$/i, '') || '图片';
   }
 }
 
-window.AppleStyleConverter = AppleStyleConverter;
+APPLE_CONVERTER_GLOBAL.AppleStyleConverter = AppleStyleConverter;
+if (typeof window !== 'undefined') {
+  window.AppleStyleConverter = AppleStyleConverter;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = AppleStyleConverter;
+}

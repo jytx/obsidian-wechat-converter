@@ -1,5 +1,33 @@
+/*
+## 核心功能
+
+覆盖 frontmatter cleanup 相关行为的 Vitest 测试用例。
+
+## 输入
+
+接收被测模块、mock 的 Obsidian/jsdom 环境、fixture Markdown/HTML 和断言数据。
+
+## 输出
+
+输出自动化断言结果，保护渲染、同步、设置、安全或 UI 行为不回归。
+
+## 定位
+
+位于 tests/，是回归测试层；测试应描述用户可见或服务契约行为。
+
+## 依赖
+
+关键依赖：Vitest、项目 mock/helper，以及被测的 frontmatter cleanup 模块。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 tests 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+const { loadInputModule } = require('./helpers/input-module.cjs');
 describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () => {
   let AppleStyleView;
   let WechatAPI;
@@ -21,7 +49,7 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
       }
     }
 
-    const inputModule = require('../input.js');
+    const inputModule = loadInputModule();
     AppleStyleView = inputModule.AppleStyleView;
     WechatAPI = inputModule.WechatAPI;
 
@@ -43,8 +71,13 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
     };
 
     view = new AppleStyleView(null, plugin);
+    view.resolveArticleHtmlSource = vi.fn(() => ({
+      html: view.currentHtml || '',
+      restore: async () => {},
+    }));
     activeFile = { path: 'published/post.md', basename: 'post' };
     frontmatter = {
+      title: '这是 frontmatter 标题',
       excerpt: '这是 frontmatter 摘要',
       cover: 'published/post_img/post-cover.jpg',
       cover_dir: 'published/post_img',
@@ -61,8 +94,11 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
         getFileCache: vi.fn(() => ({ frontmatter })),
       },
       vault: {
+        configDir: '.obsidian',
         getAbstractFileByPath: vi.fn((p) => files.get(p) || null),
         getResourcePath: vi.fn((file) => `app://local/${file.path}`),
+        read: vi.fn().mockResolvedValue(''),
+        modify: vi.fn().mockResolvedValue(undefined),
         trash: vi.fn().mockResolvedValue(undefined),
         delete: vi.fn().mockResolvedValue(undefined),
       },
@@ -80,6 +116,7 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
   it('should read excerpt/cover/cover_dir and resolve cover resource from frontmatter', () => {
     const meta = view.getFrontmatterPublishMeta(activeFile);
 
+    expect(meta.title).toBe('这是 frontmatter 标题');
     expect(meta.excerpt).toBe('这是 frontmatter 摘要');
     expect(meta.cover).toBe('published/post_img/post-cover.jpg');
     expect(meta.cover_dir).toBe('published/post_img');
@@ -106,6 +143,7 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
 
   it('should read frontmatter keys with case variants', () => {
     frontmatter = {
+      Title: '大小写标题',
       Excerpt: '大小写摘要',
       Cover: 'published/post_img/post-cover.jpg',
       CoverDIR: 'published/post_img',
@@ -113,6 +151,7 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
     view.app.metadataCache.getFileCache = vi.fn(() => ({ frontmatter }));
 
     const meta = view.getFrontmatterPublishMeta(activeFile);
+    expect(meta.title).toBe('大小写标题');
     expect(meta.excerpt).toBe('大小写摘要');
     expect(meta.cover).toBe('published/post_img/post-cover.jpg');
     expect(meta.cover_dir).toBe('published/post_img');
@@ -139,6 +178,14 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
     expect(view.isSafeCleanupDirPath('published/../secret')).toBe(false);
     expect(view.isSafeCleanupDirPath('.obsidian')).toBe(false);
     expect(view.isSafeCleanupDirPath('')).toBe(false);
+  });
+
+  it('should block the active Obsidian config dir when the vault uses a custom configDir', () => {
+    view.app.vault.configDir = '.config/obsidian-mobile';
+
+    expect(view.isSafeCleanupDirPath('.config/obsidian-mobile')).toBe(false);
+    expect(view.isSafeCleanupDirPath('.config/obsidian-mobile/plugins')).toBe(false);
+    expect(view.isSafeCleanupDirPath('.obsidian')).toBe(true);
   });
 
   it('should cleanup configured directory after sync success', async () => {
@@ -235,6 +282,34 @@ describe('AppleStyleView - Frontmatter Meta & Configured Directory Cleanup', () 
 
     expect(frontmatter.cover).toBe('');
     expect(frontmatter.cover_dir).toBe('');
+  });
+
+  it('should fallback to text-based frontmatter cleanup on Obsidian versions without processFrontMatter', async () => {
+    delete view.app.fileManager.processFrontMatter;
+    view.app.vault.read.mockResolvedValue([
+      '---',
+      'title: Example',
+      'cover: published/post_img/post-cover.jpg',
+      'cover_dir: published/post_img',
+      'excerpt: keep me',
+      '---',
+      '',
+      'Body',
+    ].join('\n'));
+
+    const warning = await view.clearInvalidPublishMetaAfterCleanup(activeFile, 'published/post_img');
+
+    expect(warning).toBeNull();
+    expect(view.app.vault.modify).toHaveBeenCalledWith(activeFile, [
+      '---',
+      'title: Example',
+      "cover: ''",
+      "cover_dir: ''",
+      'excerpt: keep me',
+      '---',
+      '',
+      'Body',
+    ].join('\n'));
   });
 
   it('should not clear remote/data URL values in frontmatter after cleanup', async () => {

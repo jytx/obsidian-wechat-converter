@@ -1,5 +1,33 @@
+/*
+## 核心功能
+
+覆盖 sync modal actions 相关行为的 Vitest 测试用例。
+
+## 输入
+
+接收被测模块、mock 的 Obsidian/jsdom 环境、fixture Markdown/HTML 和断言数据。
+
+## 输出
+
+输出自动化断言结果，保护渲染、同步、设置、安全或 UI 行为不回归。
+
+## 定位
+
+位于 tests/，是回归测试层；测试应描述用户可见或服务契约行为。
+
+## 依赖
+
+关键依赖：Vitest、项目 mock/helper，以及被测的 sync modal actions 模块。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 tests 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+const { loadInputModule } = require('./helpers/input-module.cjs');
 function createObsidianLikeElement(tag = 'div') {
   const el = document.createElement(tag);
   el.empty = function empty() {
@@ -89,10 +117,11 @@ describe('AppleStyleView - sync action modal flows', () => {
       }
     };
 
-    AppleStyleView = require('../input.js').AppleStyleView;
+    AppleStyleView = loadInputModule().AppleStyleView;
     view = new AppleStyleView(null, {
       manifest: { id: 'wechat-converter' },
       settings: {},
+      saveSettings: vi.fn(),
     });
     view.app = { isMobile: true };
   });
@@ -117,7 +146,7 @@ describe('AppleStyleView - sync action modal flows', () => {
     configBtn.onclick();
 
     expect(notices.length).toBeGreaterThan(0);
-    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Wechat Converter 并配置账号');
+    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Obsidian 发布助手并配置公众号账号');
   });
 
   it('showSyncFailureActions should trigger retry callback when user clicks retry', async () => {
@@ -146,6 +175,65 @@ describe('AppleStyleView - sync action modal flows', () => {
     settingsBtn.onclick();
 
     expect(notices.length).toBeGreaterThan(0);
-    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Wechat Converter 并配置账号');
+    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Obsidian 发布助手并配置公众号账号');
+  });
+
+  it('showSyncFailureActions should let users unlink a stale draft and retry as a new draft', async () => {
+    const retrySpy = vi.spyOn(view, 'onSyncToWechat').mockResolvedValue(undefined);
+    view.plugin.settings = {
+      draftCache: {
+        version: 1,
+        articles: {
+          'folder/note.md': {
+            sourcePath: 'folder/note.md',
+            mediaId: 'draft-stale',
+            accountId: 'acc-1',
+            title: 'Note',
+            index: 0,
+            updatedAt: 100,
+          },
+        },
+      },
+    };
+    view.sessionDraftMediaId = 'draft-stale';
+    view.sessionDraftIndex = 0;
+
+    view.showSyncFailureActions('更新草稿失败', {
+      draftAssociation: {
+        sourcePath: 'folder/note.md',
+        mediaId: 'draft-stale',
+        accountId: 'acc-1',
+      },
+    });
+
+    const modal = getLastModal();
+    expect(modal.contentEl.textContent).toContain('取消关联后新建草稿');
+    const resetBtn = findButtonByText(modal.contentEl, '取消关联并新建草稿');
+    expect(resetBtn).not.toBeNull();
+
+    await resetBtn.onclick();
+
+    expect(view.plugin.settings.draftCache.articles).toEqual({});
+    expect(view.sessionDraftMediaId).toBe('');
+    expect(view.sessionDraftIndex).toBe(0);
+    expect(view.plugin.saveSettings).toHaveBeenCalledTimes(1);
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('showSyncFailureActions should show proxy auth error message and hide unlink button', () => {
+    view.showSyncFailureActions('Token 无效，请联系作者获取', {
+      isProxyAuth: true,
+      draftAssociation: {
+        sourcePath: 'folder/note.md',
+        mediaId: 'draft-stale',
+        accountId: 'acc-1',
+      },
+    });
+
+    const modal = getLastModal();
+    expect(modal.contentEl.textContent).toContain('请检查您的 API 代理地址和 Token 配置是否正确');
+    expect(modal.contentEl.textContent).not.toContain('取消关联后新建草稿');
+    const resetBtn = findButtonByText(modal.contentEl, '取消关联并新建草稿');
+    expect(resetBtn).toBeNull();
   });
 });

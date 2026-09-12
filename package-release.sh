@@ -16,12 +16,7 @@ zip -r "$ZIP_FILE" \
     main.js \
     manifest.json \
     styles.css \
-    README.md \
-    README.zh-CN.md \
-    LICENSE \
-    images \
-    ai-layout-skills \
     -x "*.DS_Store*"
 
 echo "✅ 打包完成: $ZIP_FILE"
-echo "👉 现在你可以将此文件上传到 GitHub Release 的 Assets 中了。"
+echo "👉 官方 GitHub Release 仅上传 main.js / manifest.json / styles.css；zip 仅作为本地手动安装包。"

@@ -1,11 +1,63 @@
+/*
+## 核心功能
+
+覆盖 settings migration 相关行为的 Vitest 测试用例。
+
+## 输入
+
+接收被测模块、mock 的 Obsidian/jsdom 环境、fixture Markdown/HTML 和断言数据。
+
+## 输出
+
+输出自动化断言结果，保护渲染、同步、设置、安全或 UI 行为不回归。
+
+## 定位
+
+位于 tests/，是回归测试层；测试应描述用户可见或服务契约行为。
+
+## 依赖
+
+关键依赖：Vitest、项目 mock/helper，以及被测的 settings migration 模块。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 tests 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+const { loadInputModule } = require('./helpers/input-module.cjs');
 describe('AppleStylePlugin - Settings Migration', () => {
   let AppleStylePlugin;
 
   beforeEach(() => {
     vi.resetModules();
-    AppleStylePlugin = require('../input.js');
+    AppleStylePlugin = loadInputModule().default;
+  });
+
+  it('serializes bridge lifecycle operations across configuration changes', async () => {
+    const plugin = new AppleStylePlugin();
+    const events = [];
+    let releaseStop;
+
+    const stop = plugin._queueWechatSyncBridgeLifecycle('stop', async () => {
+      events.push('stop:start');
+      await new Promise((resolve) => {
+        releaseStop = resolve;
+      });
+      events.push('stop:end');
+    });
+    const start = plugin._queueWechatSyncBridgeLifecycle('start', async () => {
+      events.push('start');
+    });
+
+    await vi.waitFor(() => {
+      expect(events).toEqual(['stop:start']);
+    });
+    releaseStop();
+    await Promise.all([stop, start]);
+    expect(events).toEqual(['stop:start', 'stop:end', 'start']);
   });
 
   it('should migrate legacy folder cleanup config to cleanupDirTemplate', async () => {
@@ -89,6 +141,7 @@ describe('AppleStylePlugin - Settings Migration', () => {
       cleanupDirTemplate: '',
       cleanupAfterSync: false,
       cleanupUseSystemTrash: true,
+      clientId: 'client-123456',
     });
     plugin.saveData = vi.fn().mockResolvedValue(undefined);
 
@@ -103,6 +156,7 @@ describe('AppleStylePlugin - Settings Migration', () => {
       wechatAccounts: [],
       defaultAccountId: '',
       cleanupDirTemplate: '',
+      clientId: 'client-123456',
     });
     plugin.saveData = vi.fn().mockResolvedValue(undefined);
 
@@ -128,6 +182,7 @@ describe('AppleStylePlugin - Settings Migration', () => {
         author: '作者',
       }],
       defaultAccountId: 'acc-1',
+      clientId: 'client-123456',
     });
     plugin.saveData = vi.fn().mockResolvedValue(undefined);
 
@@ -163,6 +218,40 @@ describe('AppleStylePlugin - Settings Migration', () => {
     expect(plugin.settings.wechatAccounts[0]).not.toHaveProperty('enableOriginal');
     expect(plugin.settings.wechatAccounts[0]).not.toHaveProperty('allowReprint');
     expect(plugin.settings.wechatAccounts[0].openComment).toBe(true);
+    expect(plugin.saveData).toHaveBeenCalledTimes(1);
+  });
+
+  it('should normalize legacy flat draft cache shape', async () => {
+    const plugin = new AppleStylePlugin();
+    plugin.loadData = vi.fn().mockResolvedValue({
+      wechatAccounts: [],
+      defaultAccountId: '',
+      draftCache: {
+        'folder\\note.md': {
+          mediaId: 'draft-media',
+          accountId: 'acc-1',
+          title: 'Note',
+          updatedAt: 100,
+        },
+      },
+    });
+    plugin.saveData = vi.fn().mockResolvedValue(undefined);
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.draftCache).toEqual({
+      version: 1,
+      articles: {
+        'folder/note.md': {
+          sourcePath: 'folder/note.md',
+          mediaId: 'draft-media',
+          accountId: 'acc-1',
+          title: 'Note',
+          index: 0,
+          updatedAt: 100,
+        },
+      },
+    });
     expect(plugin.saveData).toHaveBeenCalledTimes(1);
   });
 
@@ -276,5 +365,51 @@ describe('AppleStylePlugin - Settings Migration', () => {
     expect(plugin.getArticleLayoutState('notes/demo.md', 'tech-green')?.layoutJson?.blocks?.[0]?.title).toBe('blue');
     expect(plugin.getArticleLayoutState('notes/demo.md', 'ocean-blue')?.layoutJson?.blocks?.[0]?.title).toBe('blue');
     expect(Object.keys(plugin.settings.ai.articleLayoutsByPath['notes/demo.md'].familyStates)).toEqual(['tutorial-cards']);
+  });
+
+  it('should auto-generate clientId when it is missing and trigger a save', async () => {
+    const plugin = new AppleStylePlugin();
+    plugin.loadData = vi.fn().mockResolvedValue({
+      wechatAccounts: [],
+      defaultAccountId: '',
+      cleanupDirTemplate: '',
+    });
+    plugin.saveData = vi.fn().mockResolvedValue(undefined);
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.clientId).toBeTruthy();
+    expect(plugin.settings.clientId.startsWith('wp_dev_')).toBe(true);
+    expect(plugin.saveData).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets persisted bridge and Pro runtime state on Obsidian startup', async () => {
+    const plugin = new AppleStylePlugin();
+    plugin.loadData = vi.fn().mockResolvedValue({
+      wechatAccounts: [],
+      defaultAccountId: '',
+      multiPlatformSync: {
+        enabled: true,
+        token: 'migration-token',
+        connectedClients: [{
+          extensionInstanceId: 'browser-A',
+          status: 'connected',
+          capabilities: { proLicensed: true },
+          license: { state: 'pro', observedAt: Date.now() - 1000 },
+        }],
+        connection: {
+          status: 'connected',
+          capabilities: { proLicensed: true, quotaPolicy: true },
+        },
+      },
+    });
+    plugin.saveData = vi.fn().mockResolvedValue(undefined);
+
+    await plugin.loadSettings();
+
+    expect(plugin.settings.multiPlatformSync.connectedClients[0].status).toBe('disconnected');
+    expect(plugin.settings.multiPlatformSync.connection.status).toBe('untested');
+    expect(plugin.settings.multiPlatformSync.connection.capabilities).toEqual({ quotaPolicy: true });
+    expect(plugin.saveData).toHaveBeenCalledTimes(1);
   });
 });

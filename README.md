@@ -1,28 +1,81 @@
-简体中文 | [English](./README.en.md)
+简体中文 | [English README](https://github.com/DavidLam-oss/obsidian-wechat-converter/blob/main/README.en.md)
 
-# 📝 微信公众号排版转换器 (WeChat Converter)
+# 📝 微信公众号排版转换器 (Wechat Converter)
 
 **让技术写作回归优雅与纯粹。**
 
-一款专为 Obsidian 打造的微信公众号排版增强插件。它不仅仅是一个转换工具，更是您内容创作流中的"数字化妆师"。我们解决了 Obsidian 到微信公众号排版的"最后一公里"问题，让您专注于内容创作，无需为繁琐的格式调整而分心。
+一款专为 Obsidian 打造的公众号、飞书云文档与多平台发布增强插件。它不仅仅是一个转换工具，更是您内容创作流中的"数字化妆师"。我们解决了 Obsidian 到微信公众号排版与飞书云文档沉淀的"最后一公里"问题，也把同一篇文章继续送往知乎、掘金、CSDN 等内容平台，让您专注于内容创作，无需为繁琐的格式调整和重复发布而分心。
 
-只需一键，即可将您的 Markdown 笔记转换为符合微信生态美学、阅读体验极佳的 HTML，无论是代码块、引用、列表还是本地图片，都能完美呈现。
+只需一键，即可将您的 Markdown 笔记转换为符合微信生态美学、阅读体验极佳的 HTML；也可以同步到飞书云文档，或在发布窗口选择其他平台，通过 Obsidian 发布助手浏览器插件保存为各平台草稿。无论是代码块、引用、列表、本地图片、GIF 动图还是公式图表，都尽量保持从 Obsidian 到发布端的完整呈现。
 
-![Version](https://img.shields.io/badge/version-2.7.6-blue)
-![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0+-purple)
+![Version](https://img.shields.io/badge/version-2.10.7-blue)
+![Obsidian](https://img.shields.io/badge/Obsidian-1.4.0+-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
-
+![Chrome Companion](https://img.shields.io/badge/Chrome%20%E5%8D%8F%E5%90%8C%E6%89%A9%E5%B1%95-Obsidian%20%E5%8F%91%E5%B8%83%E5%8A%A9%E6%89%8B%E2%80%A2%E5%B7%B2%E4%B8%8A%E7%BA%BF-7c3aed)
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E8%B5%9E%E5%8A%A9%E6%94%AF%E6%8C%81-ff69b4?logo=github-sponsors)](#support)
 
 > 本项目基于开源项目 [ai-writing-plugins](https://github.com/Ceeon/ai-writing-plugins) 进行深度重构与迭代开发。我们致力于打造 Obsidian 生态中体验最好的公众号排版工具。
 
-如果这个插件帮你节省了公众号排版、复制或同步草稿箱的时间，欢迎[支持项目继续维护](./docs/support.md)。
+> ☕ **开源不易，如果这个插件帮您节省了排版与多平台发布的时间，欢迎 [👉 扫码请作者喝杯咖啡](#support) 支持项目持续维护！**
 
 
-## 💡 核心升级点 (Key Highlights)
+## 🚀 发布能力一览
+
+同一个“发布与分发”窗口里，插件把不同内容类型和发布目标区分清楚，避免把所有平台都塞进一条复杂链路里：
+
+- **微信公众号文章草稿**：走微信官方 API，支持多账号、封面 / 摘要、素材库封面、草稿关联更新、账号级发布默认值和可选同步后清理。
+- **微信公众号贴图草稿**：同样走微信官方 API；可以从正文、文档属性、本地文件和公众号素材库整理最多 20 张图片，调整发布顺序并补充贴图标题与文案。
+- **飞书云文档**：走飞书开放平台 API，发布到设置里配置的目标文件夹；支持首次创建、覆盖更新、文档重新绑定、图片 / GIF 上传、调用次数统计，以及 Callout、任务列表、数学公式和 Mermaid 处理策略。
+- **其他内容平台**：知乎、掘金、CSDN、小红书等平台通过「Obsidian 发布助手」浏览器插件保存草稿，使用浏览器已有登录态，不在 Obsidian 内嵌平台登录。
+- **多渠道工作流**：一篇 Obsidian 笔记可以先同步公众号，再沉淀到飞书云文档，也可以继续分发到多个内容平台草稿箱，最后分别检查并手动发布。
+
+<table>
+  <tr>
+    <th align="center">发布弹窗：选择目标平台</th>
+    <th align="center">浏览器插件：平台列表</th>
+    <th align="center">发布任务结果</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="images/multiplatform_publish_modal.png" height="420"/></td>
+    <td align="center"><img src="images/multiplatform_platform_list.png" height="420"/></td>
+    <td align="center"><img src="images/multiplatform_task_center.png" height="420"/></td>
+  </tr>
+</table>
+
+
+## 💡 核心升级点
 
 相较于原版，我们**重写了核心渲染逻辑**并新增了大量实用功能，旨在实现真正的**"所见即所得"**：
 
-1.  **➗ 完美支持数学公式 (Math Support) ⭐ v2.1 新增**
+1.  **🌐 多平台发布 ⭐ v2.8.0 新增**
+    - **一处写作，多处分发**：在 Obsidian 中完成写作和排版后，可继续发送到知乎、掘金、CSDN、语雀、小红书等平台草稿箱。
+    - **「Obsidian 发布助手」浏览器插件接管平台登录态**：其他平台通过浏览器已有登录态保存草稿，Obsidian 不内嵌平台登录，也不接管 Cookie。
+    - **微信、飞书与其他平台分工清晰**：微信公众号和飞书云文档使用插件内置 API 链路，其他平台走「Obsidian 发布助手」浏览器插件链路。
+    - **发布窗口直接选择平台**：在“发布与分发”窗口切换到“其他平台”，勾选平台后发送到浏览器插件。
+    - **任务结果回到插件查看**：草稿链接、失败原因和单平台重试由 「Obsidian 发布助手」任务窗口处理，减少 Obsidian 里的等待和阻塞。
+
+2.  **📄 飞书云文档发布**
+    - **一键同步到飞书文件夹**：在插件设置中配置飞书自建应用和目标文件夹 Token 后，可直接把当前笔记发布为飞书 docx 云文档。
+    - **智能覆盖更新**：同一篇 Obsidian 笔记再次同步时，会优先更新已绑定文档，尽量保持原飞书链接不变。
+    - **文档重绑能力**：飞书文档被移动、重建，或本地缓存 token 失效时，可在发布弹窗粘贴新的 docx 链接重新绑定。
+    - **图片、GIF 与图床适配**：支持本地路径、相对路径、WikiLink 和远程图片；GIF 会保留动画效果。
+    - **语法兼容增强**：支持 Callout、任务列表、数学公式、表格和 Mermaid 处理策略，让测试笔记和团队文档更接近 Obsidian 原始结构。
+    - **调用次数统计**：设置页会展示当月飞书 OpenAPI 调用次数，方便免费额度用户掌握用量。
+
+    <table>
+      <tr>
+        <th align="center">飞书设置与调用统计</th>
+        <th align="center">发布弹窗：飞书云文档</th>
+        <th align="center">同步后的飞书文档</th>
+      </tr>
+      <tr>
+        <td align="center"><img src="images/feishu_settings_tab.png" alt="飞书同步设置页" height="420" /></td>
+        <td align="center"><img src="images/feishu_publish_modal.png" alt="飞书发布弹窗" height="420" /></td>
+        <td align="center"><img src="images/feishu_doc_result.png" alt="同步后的飞书云文档" height="420" /></td>
+      </tr>
+    </table>
+
+3.  **➗ 完美支持数学公式 ⭐ v2.1 新增**
     - **LaTeX 全面支持**：直接书写 `$E=mc^2$` 或 `$$...$$`，所见即所得。
     - **纯矢量 SVG 渲染**：采用独家无缓存技术，将公式转为独立的 SVG 矢量图，无论放大多少倍都清晰锐利。
     - **抗清洗**：完美抵抗微信公众号的样式清洗，不再出现乱码或被吞掉的情况。
@@ -31,7 +84,7 @@
       <img src="images/math_render.png" alt="数学公式渲染" width="520" />
     </p>
 
-2.  **📊 Mermaid 图表支持**
+4.  **📊 Mermaid 图表支持**
     - **沿用 Obsidian 原生渲染**：在 Obsidian 里能正常显示的 Mermaid 图表，会在插件预览中继续显示。
     - **导出自动转 PNG**：复制到公众号或同步到草稿箱时，会自动将 Mermaid 图表栅格化为 PNG，避免 SVG 过长导致微信拦截。
     - **保留图表原色**：导出时不会套用数学公式的改色逻辑，尽量保持 Mermaid 主题与连线配色。
@@ -40,13 +93,15 @@
       <img src="images/mermaid_render.png" alt="Mermaid 图表在转换器预览中的渲染效果" height="800" />
     </p>
     
-3.  **🚀 一键同步到微信草稿箱 (v2.2 增强)**
+5.  **🚀 一键同步到微信草稿箱 (v2.2 增强)**
     - **极速并发上传**：图片上传速度提升 300%，支持多线程并发处理，大图文章秒传。
     - **智能重试机制**：自动处理网络抖动与 Token 过期，全程零人工干预，稳如泰山。
     - **实时进度反馈**：新增精确的上传进度条 (e.g., "3/12")，让等待不再焦虑。
     - **安全防重**：严格的幂等性设计，杜绝因网络超时产生的重复草稿。
     - **告别复制粘贴**：直接将文章同步到微信公众号后台草稿箱，图片自动上传。
     - **智能封面处理**：如果你的文档头部信息（frontmatter）里写了 `cover`，会优先用它做封面；没写就自动用正文第一张图，也可以手动换图。
+    - **草稿更新**：同一篇笔记再次同步到同一个公众号账号时，优先更新已关联草稿，避免后台堆出重复草稿。
+    - **素材库封面**：发布窗口支持从微信素材库选择封面；选择素材库封面后，多平台分发也会尽量携带同一张封面。
     - **智能摘要辅助**：如果 frontmatter 里写了 `excerpt`，会优先用它；没写就自动截取前 45 个字，也可以手动改。
     - **同步后自动清理（可选）**：发送成功后，可以自动删除你在设置里指定的目录（默认关闭）。
     - **目录支持变量**：清理目录支持 `{{note}}`，会自动替换成当前文档名，例如 `published/{{note}}_img`。
@@ -59,7 +114,32 @@
       <img src="images/wechat_sync_popup.png" alt="微信同步弹窗" width="520" />
     </p>
 
-4.  **🎛 全新可视化设置面板 (Settings Panel)**
+6.  **🖼️ 微信公众号贴图**
+    - **独立贴图模式**：在转换器顶部从“文章排版模式”切换到“微信贴图模式”，不会与普通文章草稿混在一起。
+    - **多来源收集图片**：可以整理正文图片、文档属性中的图片、本地上传图片，以及当前公众号素材库中的图片。
+    - **最多 20 张**：贴图列表会提示当前数量和上限，便于发布前控制图片规模。
+    - **发布前整理**：支持调整顺序、移除和恢复图片，并提供标题与文案字数提示。
+    - **保护原始笔记**：贴图模式会把适合发布的正文转换为纯文本；调整贴图顺序或移除图片不会改写原始 Markdown。
+    - **同步到微信草稿箱**：确认图片、标题和文案后，可以直接生成微信公众号贴图草稿。
+
+    <table>
+      <tr>
+        <th align="center">整理贴图图片与发布文案</th>
+        <th align="center">确认标题、图片与公众号账号</th>
+      </tr>
+      <tr>
+        <td align="center"><img src="images/wechat_image_post_editor.png" alt="微信公众号贴图模式：整理图片与发布文案" height="440" /></td>
+        <td align="center"><img src="images/wechat_image_post_publish.png" alt="微信公众号贴图发布弹窗" height="440" /></td>
+      </tr>
+    </table>
+
+7.  **🎨 自定义 CSS**
+    - **在现有主题上继续定制**：可以直接在设置中填写 CSS，也可以引用 Vault 内的 Markdown 或 CSS 笔记作为样式来源。
+    - **适合长期维护**：CSS 笔记支持 YAML frontmatter、纯 CSS，以及一个或多个 fenced `css` 代码块，便于把个人排版规则独立保存和复用。
+    - **覆盖完整公众号文章链路**：自定义样式会应用于普通预览、复制到公众号和微信公众号文章草稿。
+    - **边界清晰**：自定义 CSS 不应用于 AI 编排结果、微信公众号贴图或其他平台发布，避免不同输出链路互相污染。
+
+8.  **🎛 全新可视化设置面板**
     - 告别繁琐的代码修改！我们内置了直观的设置面板，让您可以实时调整字体、字号、主题色等参数，一切尽在掌握。
 
     <table>
@@ -73,22 +153,23 @@
       </tr>
     </table>
 
-5.  **🎨 三大专家级主题 (Premade Themes)**
+9.  **🎨 三大专家级主题**
     - 内置 **简约 (Simple)**、**经典 (Classic)**、**优雅 (Elegant)** 三款精心设计的主题，覆盖从技术博客到人文随笔的各种场景。
     - 引用块支持更克制的**中性灰样式**，减少大面积主题色对正文阅读的干扰。
     - Callout 支持按语义类型高亮，如 `note`、`tip`、`warning`、`danger` 等；未知类型会自动回退为信息类样式。
 
-6.  **🖼️ 强大的本地图片支持 (Local Image Support)**
+10. **🖼️ 强大的本地图片支持**
     - **打破图床限制**：完美支持 Obsidian 的本地图片引用（包括 `![[Wiki Link]]` 和 `![]()`）。
     - **头像上传**：支持直接上传本地图片作为作者头像，插件会自动转码为 Base64。
     - **强大的本地图片支持**：无论是相对路径、绝对路径还是 WikiLink，都能自动识别并压缩。
     - **GIF 动图支持**：针对 GIF 格式特别优化，自动绕过压缩流程，完美保留完整动画帧。
     - **图片左右滑动查看**：多张图片可以组织成横向滑动图片块，适合步骤截图、对比图、长图拆分和敏感图片提示。
+    - **任务列表兼容**：Markdown 任务列表会转换为微信更稳定的勾选标记，避免 `[ ]` / `[x]` 泄漏到最终文章。
     - **温馨提示**：建议图片（尤其是 GIF）保持在 10MB 以内，以获得最佳的处理速度和公众号兼容性。超过 10MB 时插件会弹出提醒。
 
-7.  **⚡️ 实时渲染预览 (Live Preview)**
+11. **⚡️ 实时渲染预览**
     - 右侧预览区实现了**毫秒级响应**的实时渲染。您在左侧 Markdown 编辑的每一个字符，都会即时反馈在右侧的公众号预览视图中。
-    - **📱 双模预览 (Dual Mode Preview)** ⭐ v2.2 新增
+    - **📱 双模预览** ⭐ v2.2 新增
         - **手机仿真模式 (默认)**：提供逼真的 iPhone X 边框与刘海屏效果，支持深色模式适配，还原最真实的读者视角。
         - **经典全宽模式**：在设置中一键切换回无边框全屏预览，利用屏幕每一寸空间。
     - **↕️ 双向同步滚动 (Bidirectional Sync)**：无论是在左侧编辑还是右侧浏览，另一侧都会如影随形，精准对齐。
@@ -104,7 +185,7 @@
       </tr>
     </table>
 
-8.  **💻 Mac 风格代码块与样式还原**
+12. **💻 Mac 风格代码块与样式还原**
     - 重新设计了代码块样式，支持 macOS 窗口风格及行号显示。
     - **1:1 完美还原**：我们在 Obsidian 预览区看到的样式（包括间距、颜色、边框、阴影），复制到微信后台后将**分毫不差**。
     - **宽表格横向滑动**：列数较多或内容较长的表格会自动保持可左右滑动，避免在手机端被强行压缩或截断。
@@ -113,19 +194,35 @@
       <img src="images/code_render.png" alt="Mac风格代码块" width="520" />
     </p>
 
-## 🆕 v2.7.0 新增了什么
+## ☕ 支持与赞助 <a id="support"></a>
 
-- **AI 编排进入主工作流**：现在可以直接在转换器顶部打开 `AI 编排`，配置 Provider、选择布局、切换颜色、查看 schema 校验结果，并导出调试快照。
-- **AI 编排缓存更好用**：按布局家族保留最新结果，重新打开面板后可以直接应用缓存；生成失败时也会尽量保留上一版成功结果。
-- **颜色选择更灵活**：AI 编排可以自动推荐颜色，也可以在生成前手动选择颜色；生成后切换颜色会复用当前布局结构，不需要完整重新生成。
-- **Mermaid 导出更稳**：在 Obsidian 预览里继续保留 Mermaid 图表，复制到公众号或同步草稿时自动转成 PNG，减少微信吞图或拦截 SVG 的概率。
-- **多账号发布默认值**：每个公众号账号都可以单独保存原文链接、留言开关和“仅粉丝可留言”，减少每次同步前的重复设置。
-- **引用 / Callout 风格更克制**：新增中性灰引用模式，常见 Callout 会按语义类型自动着色，未知类型统一回退为信息类样式。
+Wechat Converter 会始终保持免费与开源。如果它帮您节省了公众号排版或多平台发布的时间，欢迎请作者喝杯咖啡，支持项目持续维护！
+
+您的每一份支持都将用于：
+- **持续适配微信生态**：紧跟微信公众号编辑器与官方草稿箱 API 规则变动，保障稳定排版与同步
+- **优化多平台分发体验**：持续打磨飞书云文档、小红书、知乎、B 站、今日头条等更多平台的分发体验与格式兼容
+- **打磨极致渲染细节**：不断改进代码高亮、数学公式、Mermaid 图表及多图排版的高清导出呈现
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="240">
+        <img src="images/support-wechat.png" alt="微信赞赏码" width="180" /><br />
+        <sub><b>微信赞赏</b></sub>
+      </td>
+      <td align="center" width="240">
+        <img src="images/support-alipay.jpg" alt="支付宝收款码" width="180" /><br />
+        <sub><b>支付宝</b></sub>
+      </td>
+    </tr>
+  </table>
+  <p><i>❤️ 开源不易，感谢每一位支持项目持续迭代的创作者！</i></p>
+</div>
 
 ## 📖 使用方法
 
 1. **唤起插件**
-   - 点击 Obsidian 左侧边栏的 🪄 图标 (WeChat Converter)。
+   - 点击 Obsidian 左侧边栏的 🪄 图标。
    - 或使用命令面板 (`Cmd/Ctrl + P`) 搜索并执行 "Open Wechat Converter"。
 
 2. **预览与调整**
@@ -149,7 +246,45 @@
      - `cover_dir` 用于同步成功后的“自动清理目录”判断，不作为封面图来源
      - 如果没有，就自动回退到插件默认逻辑（摘要自动截取、封面取正文首图）
    - 你在弹窗里手动上传封面、手动改摘要，始终优先于自动值。
+   - 如果当前笔记已经关联过微信草稿，再次同步会优先更新原草稿；需要新建时可在发布窗口取消关联。
+   - 如果封面已经在微信素材库里，可以直接点击“从素材库选择”，不用重复上传本地文件。
    - 发送成功后，文章会出现在公众号后台草稿箱。
+
+5. **发布微信公众号贴图**
+   - 在转换器顶部切换到 **微信贴图模式**。
+   - 从当前正文、文档属性、本地文件或当前公众号素材库加入图片；单篇贴图最多 20 张。
+   - 拖动图片调整最终发布顺序；也可以临时移除或恢复图片。这里的操作只影响贴图草稿，不会改写原始 Markdown。
+   - 检查自动转换后的纯文本内容，填写贴图标题和文案，并根据界面中的字数提示调整内容。
+   - 选择公众号账号并同步，完成后到微信公众号后台草稿箱做最终检查和发布。
+
+6. **启用自定义 CSS**
+   - 打开插件设置 → **微信公众号** → **自定义 CSS**。
+   - 可以直接填写 CSS，也可以引用 Vault 内的 Markdown / CSS 笔记。Markdown 样式笔记可以写 YAML frontmatter、纯 CSS，或一个 / 多个 fenced `css` 代码块。
+   - 启用后，样式会应用于普通预览、复制到公众号和微信公众号文章草稿。
+   - 自定义 CSS 不会应用到 AI 编排、微信公众号贴图和其他平台发布；这些链路会继续使用各自的输出规则。
+
+7. **同步到飞书云文档**
+   - 先在插件设置 → 飞书云文档中开启同步，并填写飞书自建应用的 App ID / App Secret、目标文件夹 Token 和可选 User ID。
+   - 建议飞书自建应用的应用身份开通云文档 / 云空间相关全部权限，用户身份开通全部权限，减少权限不足导致的同步失败。
+   - 回到转换器，点击 **发布与分发**，切换到 **飞书云文档**。
+   - 确认或修改文档标题后，点击 **同步至飞书** 或 **更新至飞书**。
+   - 首次同步会在目标文件夹创建新 docx 文档；后续同步会优先覆盖更新已绑定文档，尽量保持飞书链接不变。
+   - 如果飞书端文档被移动、重建，或本地缓存指向旧 token，可以在飞书 Tab 的“文档绑定”区域粘贴新的 docx 链接重新绑定。
+
+8. **发送到其他内容平台** ⭐ v2.8.0 新增
+   - 先安装 Obsidian 发布助手浏览器插件，并确保目标平台已经在浏览器里登录。
+   - 在插件设置 → 其他平台 → 开启「启用浏览器插件发布」，填入浏览器插件中显示的连接令牌。
+   - 点击“测试连接”，确认 Obsidian 能连接到浏览器插件。
+   - 在设置页勾选想同步的平台；需要时可点击“读取已选平台状态”。
+   - 回到转换器，点击 **发布与分发**，切换到 **其他平台**。
+   - 勾选知乎、掘金、CSDN 等目标平台后，点击 **发送到浏览器插件**。
+   - 如果微信草稿箱页选择的是素材库封面，插件会把这张封面一并发送给浏览器插件，尽量保证各平台草稿封面一致。
+   - Obsidian 会把当前文章投递给 Obsidian 发布助手；后续草稿链接、失败原因和单平台重试请在浏览器插件任务窗口中查看。
+
+   <p align="center">
+     <img src="images/multiplatform_extension_setup.png" alt="浏览器插件连接设置" height="420" /><br/>
+     <sub>浏览器插件连接设置页（配对令牌 + Obsidian Bridge 已认证）</sub>
+   </p>
 
 ### 横向滑动内容
 
@@ -300,161 +435,50 @@
 
 ## 🔧 代理设置（解决 IP 白名单问题）
 
-微信公众号 API 需要 IP 白名单验证。如果你使用 VPN 或动态 IP，可以通过 Cloudflare Worker 代理解决。
+微信公众号 API 需要 IP 白名单验证。如果你经常切换网络、使用 VPN、移动热点，或公司 / 家庭 IP 不固定，可以在插件设置里配置 API 代理。README 里不再放完整 Worker 代码，避免首页过长，也减少复制旧代码带来的维护风险。
 
-### 部署步骤
+插件设置 → **高级设置** → **API 代理地址** 支持两种方式：
 
-1. **创建 Cloudflare Worker**
-   - 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)
-   - 左侧菜单选择 **Workers & Pages** → **Create Application** → **Create Worker**
-   - 命名（如 `wechat-proxy`）并点击 **Deploy**
+1. **官方中转**：适合希望快速稳定解决 IP 白名单漂移的用户。设置页里有“获取官方中转 Token”入口，按页面指引填写带 Token 的代理地址即可。
+2. **自建代理**：适合希望完全自主管理代理服务的用户。可以基于 Cloudflare Worker 或个人 VPS 自建，设置页里有“查看自建教程”入口。
 
-2. **编辑 Worker 代码**
+安全建议：代理会中转微信 API 请求，请只使用你信任的官方中转或自建服务；代理地址必须使用 `https://`。如果选择自建服务，请在服务端限制只允许访问 `https://api.weixin.qq.com/`，并避免记录 `appid`、`secret`、`access_token` 等敏感信息。
 
-   点击 **Edit code**，替换为以下代码：
+## 🔐 隐私与权限说明
 
-   ```javascript
-   export default {
-     async fetch(request, env) {
-       const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-       const ALLOWED_METHODS = new Set(['GET', 'POST', 'UPLOAD']);
-       const corsHeaders = {
-         'Access-Control-Allow-Origin': '*',
-         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-         'Access-Control-Allow-Headers': 'Content-Type',
-       };
+插件默认在你的 Obsidian 本地运行，不包含客户端遥测，也不会自动上传你的笔记内容。以下能力只会在你主动使用对应功能时触发：
 
-       const jsonResponse = (payload, status = 200) =>
-         new Response(JSON.stringify(payload), {
-           status,
-           headers: {
-             ...corsHeaders,
-             'Content-Type': 'application/json; charset=utf-8',
-           },
-         });
-
-       const isAllowedWechatUrl = (rawUrl) => {
-         try {
-           const parsed = new URL(rawUrl);
-           return parsed.protocol === 'https:' && parsed.hostname === 'api.weixin.qq.com';
-         } catch {
-           return false;
-         }
-       };
-
-       const toUint8Array = (base64) => {
-         const binary = atob(base64);
-         const bytes = new Uint8Array(binary.length);
-         for (let i = 0; i < binary.length; i++) {
-           bytes[i] = binary.charCodeAt(i);
-         }
-         return bytes;
-       };
-   
-       // 处理 CORS 预检请求
-       if (request.method === 'OPTIONS') {
-         return new Response(null, { headers: corsHeaders });
-       }
-   
-       if (request.method !== 'POST') {
-         return jsonResponse({ error: 'Method Not Allowed' }, 405);
-       }
-   
-       try {
-         const body = await request.json();
-         const { url, method = 'GET', data, fileData, fileName, mimeType } = body;
-         const normalizedMethod = String(method || 'GET').toUpperCase();
-         
-         // 安全校验：只允许访问微信 API
-         if (typeof url !== 'string' || !isAllowedWechatUrl(url)) {
-           return jsonResponse({ error: 'Invalid URL. Only https://api.weixin.qq.com/ is allowed.' }, 400);
-         }
-
-         if (!ALLOWED_METHODS.has(normalizedMethod)) {
-           return jsonResponse({ error: 'Invalid method. Only GET, POST, and UPLOAD are allowed.' }, 400);
-         }
-   
-         let response;
-         if (normalizedMethod === 'UPLOAD') {
-           if (typeof fileData !== 'string' || fileData.length === 0) {
-             return jsonResponse({ error: 'Missing fileData for upload.' }, 400);
-           }
-
-           const approxBytes = Math.floor(fileData.length * 3 / 4);
-           if (approxBytes > MAX_UPLOAD_BYTES) {
-             return jsonResponse({ error: 'Upload too large. Maximum size is 10 MB.' }, 413);
-           }
-
-           const safeMimeType =
-             typeof mimeType === 'string' && mimeType.startsWith('image/')
-               ? mimeType
-               : 'application/octet-stream';
-           const safeFileName =
-             typeof fileName === 'string' && /^[\w.\-]+$/.test(fileName)
-               ? fileName
-               : 'image';
-
-           // 文件上传处理：Base64 -> Binary -> FormData
-           const bytes = toUint8Array(fileData);
-           const formData = new FormData();
-           formData.append('media', new Blob([bytes], { type: safeMimeType }), safeFileName);
-           response = await fetch(url, { method: 'POST', body: formData });
-         } else {
-           // 普通 JSON 请求
-           const opts = { method: normalizedMethod };
-           if (normalizedMethod === 'POST') {
-             opts.headers = { 'Content-Type': 'application/json' };
-             if (data !== undefined) opts.body = JSON.stringify(data);
-           }
-           response = await fetch(url, opts);
-         }
-   
-         const responseText = await response.text();
-         let result;
-         try {
-           result = responseText ? JSON.parse(responseText) : {};
-         } catch {
-           return jsonResponse({ error: 'Upstream returned a non-JSON response.' }, 502);
-         }
-
-         return jsonResponse(result, response.status);
-       } catch (error) {
-         return jsonResponse({ error: 'Proxy request failed.' }, 500);
-       }
-     }
-   };
-   ```
-
-   这个版本比旧示例更适合直接公开在文档里：
-   - 不记录请求 URL，避免把 `appid`、`secret`、`access_token` 写进日志。
-   - 不回显原始请求体和异常堆栈，减少敏感信息暴露。
-   - 只允许 `GET`、`POST`、`UPLOAD`，并且只允许访问 `https://api.weixin.qq.com/`。
-   - 上传大小限制为 10 MB，避免异常大文件拖垮 Worker。
-   - 上传字段固定为 `media`，与插件当前行为保持一致。
-
-3. **配置微信 IP 白名单**
-
-   将 Cloudflare 出口 IP 添加到微信公众号白名单（[官方 IP 列表](https://www.cloudflare.com/ips/)）：
-
-   ```
-   173.245.48.0/20, 103.21.244.0/22, 103.22.200.0/22, 103.31.4.0/22
-   141.101.64.0/18, 108.162.192.0/18, 190.93.240.0/20, 188.114.96.0/20
-   197.234.240.0/22, 198.41.128.0/17, 162.158.0.0/15, 104.16.0.0/13
-   104.24.0.0/14, 172.64.0.0/13, 131.0.72.0/22
-   ```
-
-4. **插件配置**
-
-   在插件设置 → **高级设置** → **API 代理地址** 中填入你的 Worker URL：
-   ```
-   https://wechat-proxy.your-account.workers.dev
-   ```
-
-   该代理仅建议自用，请不要公开分享 Worker 地址，也不要将其部署为公共服务。
-
+- **网络请求**：同步微信公众号草稿时会访问微信官方 API；同步飞书云文档时会访问飞书开放平台 API；配置 API 代理时会访问你填写的代理地址；使用 AI 编排时会访问你配置的 AI Provider；使用多平台发布时会连接本机浏览器插件服务。
+- **本地文件读取**：处理当前笔记引用的本地图片、封面和 Mermaid / LaTeX 导出资源时，会读取必要的 vault 内文件。
+- **剪贴板**：仅当你主动点击复制按钮时，插件才会把当前预览内容或调试信息写入系统剪贴板；插件不会读取系统剪贴板，也不会把剪贴板内容上传到远端。移动端不显示复制按钮。
+- **第三方账号**：微信公众号同步需要你自行配置 AppID / AppSecret；飞书云文档同步需要你自行配置飞书自建应用 App ID / App Secret、目标文件夹 Token 和可选 User ID；其他平台发布由「Obsidian 发布助手」浏览器插件使用你浏览器中已有的登录态保存草稿。
+- **Pro / 浏览器插件**：核心转换、预览、复制、微信发布和飞书云文档发布流程可在插件内使用；部分可选 Pro 与浏览器插件能力可能需要付费授权。多平台发布和 Pro 授权能力由配套浏览器插件处理；Obsidian 插件侧负责写作、排版、平台选择和任务投递。
 
 ## 🚀 安装
 
+### 方式一：社区插件市场安装（推荐 ⭐）
+
+这是最简单、最安全的安装方式：
+1. 打开 Obsidian 的 **设置** (Settings) -> **社区插件** (Community plugins)。
+2. 关闭 **限制模式** (Safe mode) 以启用社区插件。
+3. 点击社区插件旁的 **浏览** (Browse) 按钮。
+4. 搜索 `Wechat converter` 或 `微信公众号排版转换器`。
+5. 点击 **安装** (Install)，安装完成后点击 **启用** (Enable)。
+
+### 方式二：BRAT 安装（测试版/抢先体验）
+
+如果你使用 BRAT 管理插件更新并希望体验最新的 Beta 特性：
+1. 安装并启用 BRAT 插件。
+2. 在 BRAT 中添加仓库：`DavidLam-oss/obsidian-wechat-converter`。
+3. 安装后执行一次冒烟检查：
+   - 打开转换面板
+   - 预览渲染
+   - 复制到公众号
+   - （可选）一键同步到草稿箱
+
+### 方式三：手动安装（GitHub Release）
+
+若您无法访问社区插件市场，可以手动进行安装：
 1. 从 [GitHub Releases](https://github.com/DavidLam-oss/obsidian-wechat-converter/releases) 下载最新的 `obsidian-wechat-converter.zip` 插件包。
 2. 解压并将其中的文件夹放入 Obsidian vault 的 `.obsidian/plugins/` 目录中。
    > 最终路径应为：`.../.obsidian/plugins/obsidian-wechat-converter/`
@@ -464,19 +488,6 @@
    - `styles.css`
 4. 重启 Obsidian 或在设置中刷新插件列表，并启用插件。
 
-### BRAT 安装/更新
-
-如果你使用 BRAT 管理插件更新：
-
-1. 安装并启用 BRAT 插件。
-2. 在 BRAT 中添加仓库：`DavidLam-oss/obsidian-wechat-converter`。
-3. 安装后执行一次冒烟检查：
-   - 打开转换面板
-   - 预览渲染
-   - 复制到公众号
-   - （可选）一键同步到草稿箱
-
-> 说明：当前版本已支持标准三件套运行时，BRAT 更新路径与 Obsidian 插件标准发布方式一致。
 
 
 ## 🤝 贡献 (Contributing)

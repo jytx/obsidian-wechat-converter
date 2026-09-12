@@ -1,47 +1,126 @@
-const { MarkdownRenderer } = require('obsidian');
-const { serializeObsidianRenderedHtml } = require('./obsidian-triplet-serializer');
-const { normalizeRenderedDomPunctuation } = require('./chinese-punctuation');
-const {
-  hasMermaidMarker,
-  renderMermaidCodeBlocks,
-  looksLikeMermaidSvg,
-  normalizeRenderedMermaidDiagrams,
-  rasterizeRenderedMermaidDiagrams,
-} = require('./rendered-mermaid');
+/*
+## 核心功能
 
+实现渲染管线相关的 obsidian triplet renderer 能力，服务预览、复制和发布一致性。
+
+## 输入
+
+接收 Markdown 源、Obsidian 渲染上下文、DOM 容器、渲染选项和转换器依赖。
+
+## 输出
+
+输出 `neutralizeUnsafeMarkdownLinks`、`neutralizePlainWikilinks`、`normalizeWechatUnsafeTaskListMarkers`、`preprocessMarkdownForTriplet`、`injectHardBreaksForLegacyParity`、`normalizeRenderedDomPunctuation`、`shouldObserveAsyncEmbedWindow`、`shouldObserveMermaidRenderWindow`、`waitForTripletDomToSettle`、`renderByObsidianMarkdownRenderer`，供视图层生成预览或发布 HTML。
+
+## 定位
+
+位于 services/，属于渲染服务层；避免把渲染细节堆回 input.js。
+
+## 依赖
+
+关键依赖：`./obsidian-triplet-serializer.js`、`./obsidian-triplet-renderer-images.js`、`./markdown-utils.js`、`./chinese-punctuation.js`、`./dom-utils.js`、`./native-renderer.js`。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 services 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
+import { serializeObsidianRenderedHtml } from './obsidian-triplet-serializer.js';
+import { normalizeRenderedDomPunctuation } from './chinese-punctuation.js';
+import { findAllElements, getActiveDocument, getActiveWindowValue } from './dom-utils.js';
+import { parseFencedBlockDelimiter, splitMarkdownCodeSegments } from './markdown-utils.js';
+import { normalizeAdjacentMarkdownBlockHeadings } from './native-renderer.js';
+import { getImageCaptionFromPath, materializeLocalMarkdownImages, preprocessImageSwipeCallouts } from './obsidian-triplet-renderer-images.js';
+
+/**
+ * @typedef {{ marker: '`' | '~', length: number }} FenceState
+ * @typedef {{ placeholder: string, rendered: string, isBlock: boolean }} PreRenderedMathFormula
+ * @typedef {{ markdown: string, formulas: PreRenderedMathFormula[] }} PreRenderedMathResult
+ * @typedef {{ markdown: string, mathFormulas: PreRenderedMathFormula[] }} TripletPreprocessResult
+ * @typedef {{
+ *   renderMarkdown?: (markdown: string, sourcePath: string, el: HTMLElement, component: unknown) => Promise<void> | void,
+ *   render?: (app: unknown, markdown: string, el: HTMLElement, sourcePath: string, component: unknown) => Promise<void> | void,
+ * }} MarkdownRendererLike
+ * @typedef {{
+ *   render?: (markdown: string) => string,
+ *   renderInline?: (markdown: string) => string,
+ *   parse?: (markdown: string, env?: Record<string, unknown>) => Array<{ type?: string, map?: [number, number] | null }>,
+ * }} MarkdownItLike
+ * @typedef {{
+ *   md?: MarkdownItLike,
+ *   stripFrontmatter?: (markdown: string) => string,
+ * }} ConverterLike
+ * @typedef {{
+ *   app?: unknown,
+ *   markdown: string,
+ *   targetEl: HTMLElement,
+ *   sourcePath?: string,
+ *   component?: unknown,
+ *   converter?: ConverterLike | null,
+ *   markdownRenderer?: MarkdownRendererLike | null,
+ *   preserveSvgStyleTags?: boolean,
+ * }} TripletRenderOptions
+ * @typedef {{
+ *   timeoutMs?: number,
+ *   intervalMs?: number,
+ *   observeMermaid?: boolean,
+ *   minObserveMs?: number,
+ *   mermaidObserveMs?: number,
+ * }} TripletSettleOptions
+ * @typedef {{
+ *   app?: unknown,
+ *   markdown: string,
+ *   sourcePath?: string,
+ *   targetEl: HTMLElement,
+ *   component?: unknown,
+ *   markdownRenderer?: MarkdownRendererLike | null,
+ * }} ObsidianRendererOptions
+ * @typedef {{
+ *   normalizeChinesePunctuation?: boolean,
+ * }} TripletSettingsLike
+ * @typedef {(root: HTMLElement, options: { mermaidApi?: unknown }) => Promise<void> | void} MermaidCodeRendererLike
+ * @typedef {(root: HTMLElement) => Promise<void> | void} MermaidRasterizerLike
+ * @typedef {(options: Record<string, unknown>) => string} TripletSerializerLike
+ * @typedef {{
+ *   html: string,
+ *   unresolvedImageEmbeds: number,
+ *   pendingMermaidDiagrams: number,
+ *   renderedMermaidDiagrams: number,
+ * }} TripletRenderResult
+ */
+
+/** @returns {MarkdownRendererLike | null} */
+function getDefaultMarkdownRenderer() {
+  const obsidianApi = /** @type {{ MarkdownRenderer?: MarkdownRendererLike } | undefined} */ (getActiveWindowValue('obsidian'));
+  return obsidianApi?.MarkdownRenderer || null;
+}
+
+/** @param {string} line */
 function isFencedBlockDelimiter(line) {
   return /^\s{0,3}(?:`{3,}|~{3,})/.test(String(line || ''));
 }
 
-function parseFencedBlockDelimiter(line) {
-  const value = String(line || '');
-  const match = value.match(/^\s{0,3}((`{3,})|(~{3,}))(.*)$/);
-  if (!match) return null;
-  const markerRun = match[1] || '';
-  const markerChar = markerRun.charAt(0);
-  if (markerChar !== '`' && markerChar !== '~') return null;
-  return {
-    marker: markerChar,
-    length: markerRun.length,
-  };
-}
-
+/** @param {string} line */
 function isMathFenceDelimiter(line) {
   return /^\s*\$\$\s*$/.test(String(line || ''));
 }
 
+/** @param {string} line */
 function isQuoteLine(line) {
   return /^\s{0,3}(?:>\s?)+/.test(String(line || ''));
 }
 
+/** @param {string} line */
 function stripQuotePrefix(line) {
   return String(line || '').replace(/^\s{0,3}(?:>\s?)+/, '');
 }
 
+/** @param {string} prefix */
 function isQuotePrefix(prefix) {
   return /^\s{0,3}(?:>\s?)+$/.test(String(prefix || ''));
 }
 
+/** @param {string} trimmedLine */
 function startsNewBlock(trimmedLine) {
   if (!trimmedLine) return true;
   if (/^#{1,6}\s/.test(trimmedLine)) return true;
@@ -54,10 +133,12 @@ function startsNewBlock(trimmedLine) {
   return false;
 }
 
+/** @param {string} trimmedLine */
 function isListItemLine(trimmedLine) {
   return /^(?:[*+-]|\d+[.)])\s+/.test(String(trimmedLine || ''));
 }
 
+/** @param {string} line */
 function appendLegacyHardBreak(line) {
   const value = String(line || '');
   if (!value) return value;
@@ -65,6 +146,7 @@ function appendLegacyHardBreak(line) {
   return `${value.replace(/[ \t]+$/, '')}<br>`;
 }
 
+/** @param {string} line */
 function appendQuoteHardBreak(line) {
   const value = String(line || '');
   if (!value) return value;
@@ -72,6 +154,10 @@ function appendQuoteHardBreak(line) {
   return `${value.replace(/[ \t]+$/, '')}<br>`;
 }
 
+/**
+ * @param {string} markdown
+ * @returns {string}
+ */
 function injectHardBreaksForLegacyParity(markdown) {
   const lines = String(markdown || '').split('\n');
   let fenceState = null;
@@ -122,6 +208,10 @@ function injectHardBreaksForLegacyParity(markdown) {
   return lines.join('\n');
 }
 
+/**
+ * @param {string} markdown
+ * @returns {string}
+ */
 function neutralizeUnsafeMarkdownLinks(markdown) {
   const source = String(markdown || '');
   if (!source) return source;
@@ -130,7 +220,9 @@ function neutralizeUnsafeMarkdownLinks(markdown) {
   // keeps them as literal text. Escape leading "[" to mimic that behavior in triplet.
   const unsafeLinkPattern = /\[[^\]]+\]\(((?:javascript|vbscript|data):[^)\r\n]*)\)/gi;
   return source.replace(unsafeLinkPattern, (match, _href, offset, fullText) => {
-    const prevChar = offset > 0 ? fullText[offset - 1] : '';
+    const sourceText = String(fullText || '');
+    const safeOffset = Number(offset) || 0;
+    const prevChar = safeOffset > 0 ? sourceText[safeOffset - 1] : '';
     if (prevChar === '!' || prevChar === '\\') {
       return match;
     }
@@ -138,15 +230,21 @@ function neutralizeUnsafeMarkdownLinks(markdown) {
   });
 }
 
+/**
+ * @param {string} markdown
+ * @returns {string}
+ */
 function neutralizePlainWikilinks(markdown) {
   const source = String(markdown || '');
   if (!source) return source;
 
+  /** @param {string} value */
   const escapePlainWikilinks = (value) =>
     String(value || '').replace(/(^|[^!\\])(\[\[[^[\]\r\n]+?\]\])/g, (_match, prefix, wikilink) => {
       return `${prefix}\\${wikilink}`;
     });
 
+  /** @param {string} line */
   const neutralizeLineOutsideInlineCode = (line) => {
     const value = String(line || '');
     if (!value || !value.includes('[[')) return value;
@@ -203,6 +301,51 @@ function neutralizePlainWikilinks(markdown) {
   return lines.join('\n');
 }
 
+/**
+ * @param {string} markdown
+ * @returns {string}
+ */
+function normalizeWechatUnsafeTaskListMarkers(markdown) {
+  const source = String(markdown || '');
+  if (!source) return source;
+
+  const lines = source.split('\n');
+  let fenceState = null;
+  let inMathFence = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+
+    const fenceDelimiter = parseFencedBlockDelimiter(line);
+    if (fenceDelimiter) {
+      if (!fenceState) {
+        fenceState = fenceDelimiter;
+      } else if (
+        fenceDelimiter.marker === fenceState.marker &&
+        fenceDelimiter.length >= fenceState.length
+      ) {
+        fenceState = null;
+      }
+      continue;
+    }
+
+    if (!fenceState && isMathFenceDelimiter(line)) {
+      inMathFence = !inMathFence;
+      continue;
+    }
+
+    if (fenceState || inMathFence) continue;
+
+    lines[i] = line.replace(
+      /^(\s*)([-*+])\s+\[([ xX])\]\s+/,
+      (_match, indent, marker, state) =>
+        `${indent}${marker} ${String(state || '').trim().toLowerCase() === 'x' ? '☑' : '☐'} `,
+    );
+  }
+
+  return lines.join('\n');
+}
+
 // Known safe HTML tags that should NOT be escaped
 // This list includes common HTML5 tags that users might intentionally use
 const KNOWN_HTML_TAGS = new Set([
@@ -230,6 +373,10 @@ const KNOWN_HTML_TAGS = new Set([
 /**
  * Escape pseudo-HTML tags that look like HTML but are actually text.
  * For example: <Title>_xxx_MS.pdf should be rendered as text, not as an HTML tag.
+ */
+/**
+ * @param {string} markdown
+ * @returns {string}
  */
 function escapePseudoHtmlTags(markdown) {
   const lines = markdown.split('\n');
@@ -272,6 +419,10 @@ function escapePseudoHtmlTags(markdown) {
  * Escape pseudo-HTML tags in a line while preserving inline code content.
  * Supports multi-backtick code spans (CommonMark compliant).
  */
+/**
+ * @param {string} line
+ * @returns {string}
+ */
 function escapeLinePreservingInlineCode(line) {
   const segments = [];
   let lastIndex = 0;
@@ -298,7 +449,6 @@ function escapeLinePreservingInlineCode(line) {
       let foundClose = false;
       while (i < line.length) {
         if (line[i] === '`') {
-          const closeStart = i;
           let closeLen = 0;
           while (i < line.length && line[i] === '`') {
             closeLen++;
@@ -348,20 +498,27 @@ function escapeLinePreservingInlineCode(line) {
  * Escape pseudo-HTML tags in plain text (not inside code).
  * Matches full tag patterns including attributes and closing bracket.
  */
+/**
+ * @param {string} text
+ * @returns {string}
+ */
 function escapePseudoHtmlInText(text) {
   // Match opening tags: <tag> or <tag attr="value">
   // Match closing tags: </tag>
   return text.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>/g, (match, tagName, attrs) => {
-    const lowerTag = tagName.toLowerCase();
+    const rawMatch = String(match || '');
+    const rawTagName = String(tagName || '');
+    const rawAttrs = String(attrs || '');
+    const lowerTag = rawTagName.toLowerCase();
     // If it's a known HTML tag, keep it as-is
     if (KNOWN_HTML_TAGS.has(lowerTag)) {
-      return match;
+      return rawMatch;
     }
     // Otherwise escape the angle brackets
-    if (match.startsWith('</')) {
-      return `&lt;/${tagName}&gt;`;
+    if (rawMatch.startsWith('</')) {
+      return `&lt;/${rawTagName}&gt;`;
     }
-    return `&lt;${tagName}${attrs}&gt;`;
+    return `&lt;${rawTagName}${rawAttrs}&gt;`;
   });
 }
 
@@ -370,6 +527,10 @@ function escapePseudoHtmlInText(text) {
 const MATH_PLACEHOLDER_SESSION = `M${Date.now().toString(36)}X`;
 let mathPlaceholderCounter = 0;
 
+/**
+ * @param {string} type
+ * @returns {string}
+ */
 function generateMathPlaceholder(type) {
   const id = `${MATH_PLACEHOLDER_SESSION}_${mathPlaceholderCounter}_${Math.random().toString(36).slice(2, 6)}`;
   mathPlaceholderCounter += 1;
@@ -380,673 +541,82 @@ function generateMathPlaceholder(type) {
 /**
  * Pre-render math formulas and return both the processed markdown and formulas array.
  * This function is pure - it doesn't use or modify any global state.
- * @returns {{ markdown: string, formulas: Array<{placeholder: string, rendered: string, isBlock: boolean}> }}
+ * @param {string} markdown
+ * @param {ConverterLike | null | undefined} converter
+ * @returns {PreRenderedMathResult}
  */
 function preRenderMathFormulas(markdown, converter) {
+  /** @type {PreRenderedMathFormula[]} */
   const formulas = [];
 
   if (!converter || !converter.md) return { markdown, formulas };
   if (typeof converter.md.render !== 'function') return { markdown, formulas };
 
-  let output = markdown;
+  const output = splitMarkdownCodeSegments(markdown, converter).map((segment) => {
+    if (segment.isCode) return segment.text;
+    let processed = segment.text;
 
-  // First, handle block math ($$...$$) - must be processed before inline
-  // Match $$...$$ where content can span multiple lines
-  const blockMathPattern = /\$\$([\s\S]+?)\$\$/g;
-  output = output.replace(blockMathPattern, (match, formula, offset, fullText) => {
-    const placeholder = generateMathPlaceholder('BLOCK');
-    try {
-      let normalizedFormula = formula;
-      const safeOffset = Number(offset) || 0;
-      const source = String(fullText || '');
-      const lineStart = source.lastIndexOf('\n', Math.max(0, safeOffset - 1)) + 1;
-      const openingPrefix = source.slice(lineStart, safeOffset);
+    // First, handle block math ($$...$$) - must be processed before inline.
+    const blockMathPattern = /\$\$([\s\S]+?)\$\$/g;
+    processed = processed.replace(blockMathPattern, (match, formula, offset, fullText) => {
+      const placeholder = generateMathPlaceholder('BLOCK');
+      try {
+        let normalizedFormula = String(formula || '');
+        const safeOffset = Number(offset) || 0;
+        const source = String(fullText || '');
+        const lineStart = source.lastIndexOf('\n', Math.max(0, safeOffset - 1)) + 1;
+        const openingPrefix = source.slice(lineStart, safeOffset);
 
-      // In quoted blocks/callouts, captured formula lines include leading ">" markers.
-      // Strip them before MathJax rendering to avoid rendering stray ">" symbols.
-      if (isQuotePrefix(openingPrefix)) {
-        normalizedFormula = String(formula || '')
-          .split('\n')
-          .map((line) => stripQuotePrefix(line))
-          .join('\n');
+        // In quoted blocks/callouts, captured formula lines include leading ">" markers.
+        if (isQuotePrefix(openingPrefix)) {
+          normalizedFormula = String(formula || '')
+            .split('\n')
+            .map((line) => stripQuotePrefix(line))
+            .join('\n');
+        }
+
+        const rendered = converter.md.render(`$$${normalizedFormula}$$`);
+        const cleaned = rendered.replace(/^<p>|<\/p>$/g, '').trim();
+        formulas.push({ placeholder, rendered: cleaned, isBlock: true });
+        return placeholder;
+      } catch {
+        return match;
       }
+    });
 
-      // Render using full markdown-it (handles block math)
-      const rendered = converter.md.render(`$$${normalizedFormula}$$`);
-      // Extract just the rendered math (strip wrapper <p> if any)
-      const cleaned = rendered.replace(/^<p>|<\/p>$/g, '').trim();
-      formulas.push({ placeholder, rendered: cleaned, isBlock: true });
-      return placeholder;
-    } catch (error) {
-      return match;
-    }
-  });
-
-  // Then, handle inline math ($...$) - single $ not $$
-  // Use negative lookbehind/lookahead to avoid matching $$
-  const inlineMathPattern = /(?<!\$)\$(?!\$)([^\$\n]+?)\$(?!\$)/g;
-  output = output.replace(inlineMathPattern, (match, formula) => {
-    const placeholder = generateMathPlaceholder('INLINE');
-    try {
-      // Render using renderInline for inline math
-      const rendered = converter.md.renderInline(`$${formula}$`);
-      formulas.push({ placeholder, rendered, isBlock: false });
-      return placeholder;
-    } catch (error) {
-      return match;
-    }
-  });
+    // Then, handle inline math ($...$) - single $ not $$.
+    const inlineMathPattern = /(^|[^$])\$(?!\$)([^$\n]+?)\$(?!\$)/g;
+    processed = processed.replace(inlineMathPattern, (match, prefix, formula) => {
+      const placeholder = generateMathPlaceholder('INLINE');
+      try {
+        const rendered = converter.md.renderInline(`$${formula}$`);
+        formulas.push({ placeholder, rendered, isBlock: false });
+        return `${prefix}${placeholder}`;
+      } catch {
+        return match;
+      }
+    });
+    return processed;
+  }).join('');
 
   return { markdown: output, formulas };
-}
-
-const IMAGE_SWIPE_DEFAULT_WARNING = '此类图片可能引发不适，向左滑动查看';
-const IMAGE_SWIPE_DEFAULT_HINT = '左右滑动查看图片';
-const IMAGE_SWIPE_TYPES = new Set(['image-swipe', 'image-sensitive']);
-
-function encodeImageSwipeValue(value) {
-  return encodeURIComponent(String(value || ''));
-}
-
-function escapeImageSwipeHtmlAttr(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function getImageCaptionFromPath(imagePath) {
-  const value = String(imagePath || '').trim();
-  if (!value) return '';
-  const filename = value.split('/').pop().split('\\').pop() || value;
-  return filename.replace(/\.(jpg|jpeg|png|gif|webp|svg|bmp|avif)$/i, '');
-}
-
-function hasExplicitUrlProtocol(value) {
-  return /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(String(value || '').trim());
-}
-
-function shouldMaterializeLocalMarkdownImage(src) {
-  const value = String(src || '').trim();
-  if (!value) return false;
-  if (/^(?:https?:)?\/\//i.test(value)) return false;
-  if (/^data:image\//i.test(value)) return false;
-  return !hasExplicitUrlProtocol(value);
-}
-
-function encodeMarkdownImageSrc(src) {
-  const value = String(src || '').trim();
-  try {
-    return encodeURI(decodeURI(value));
-  } catch (error) {
-    return encodeURI(value);
-  }
-}
-
-function findInlineCodeRanges(line) {
-  const value = String(line || '');
-  const ranges = [];
-  let index = 0;
-
-  while (index < value.length) {
-    if (value[index] !== '`') {
-      index += 1;
-      continue;
-    }
-
-    let markerLength = 1;
-    while (value[index + markerLength] === '`') {
-      markerLength += 1;
-    }
-
-    const marker = '`'.repeat(markerLength);
-    const closeIndex = value.indexOf(marker, index + markerLength);
-    if (closeIndex === -1) {
-      index += markerLength;
-      continue;
-    }
-
-    ranges.push([index, closeIndex + markerLength]);
-    index = closeIndex + markerLength;
-  }
-
-  return ranges;
-}
-
-function findHtmlTagRanges(line) {
-  const value = String(line || '');
-  const ranges = [];
-  let index = 0;
-
-  while (index < value.length) {
-    const start = value.indexOf('<', index);
-    if (start === -1) break;
-    if (!/[A-Za-z/!?]/.test(value[start + 1] || '')) {
-      index = start + 1;
-      continue;
-    }
-
-    const end = value.indexOf('>', start + 1);
-    if (end === -1) break;
-    ranges.push([start, end + 1]);
-    index = end + 1;
-  }
-
-  return ranges;
-}
-
-function findHtmlElementContentRanges(line) {
-  const value = String(line || '');
-  const ranges = [];
-  const openTagPattern = /<([A-Za-z][\w:-]*)(?:\s[^<>]*)?>/g;
-  let match;
-
-  while ((match = openTagPattern.exec(value)) !== null) {
-    const rawTag = match[0] || '';
-    if (/\/\s*>$/.test(rawTag)) continue;
-
-    const tagName = String(match[1] || '').toLowerCase();
-    const closePattern = new RegExp(`</${tagName}\\s*>`, 'i');
-    const rest = value.slice(openTagPattern.lastIndex);
-    const closeMatch = closePattern.exec(rest);
-    if (!closeMatch) continue;
-
-    ranges.push([match.index, openTagPattern.lastIndex + closeMatch.index + closeMatch[0].length]);
-  }
-
-  return ranges;
-}
-
-function findMarkdownLinkLabelRanges(line) {
-  const value = String(line || '');
-  const ranges = [];
-
-  for (let i = 0; i < value.length; i += 1) {
-    if (value[i] !== '[' || value[i - 1] === '!' || value[i - 1] === '\\') continue;
-
-    let depth = 1;
-    let cursor = i + 1;
-    while (cursor < value.length) {
-      const char = value[cursor];
-      if (char === '\\') {
-        cursor += 2;
-        continue;
-      }
-      if (char === '[') {
-        depth += 1;
-      } else if (char === ']') {
-        depth -= 1;
-        if (depth === 0) {
-          if (value[cursor + 1] === '(') {
-            ranges.push([i, cursor + 1]);
-          }
-          break;
-        }
-      }
-      cursor += 1;
-    }
-  }
-
-  return ranges;
-}
-
-function isOffsetInRanges(offset, ranges) {
-  return ranges.some(([start, end]) => offset >= start && offset < end);
-}
-
-const HTML_VOID_TAGS = new Set([
-  'area',
-  'base',
-  'br',
-  'col',
-  'embed',
-  'hr',
-  'img',
-  'input',
-  'link',
-  'meta',
-  'param',
-  'source',
-  'track',
-  'wbr',
-]);
-
-function isHtmlVoidTag(tagName) {
-  return HTML_VOID_TAGS.has(String(tagName || '').toLowerCase());
-}
-
-function findClosingMarkdownBracket(value, startIndex) {
-  let index = startIndex;
-  while (index < value.length) {
-    const char = value[index];
-    if (char === '\\') {
-      index += 2;
-      continue;
-    }
-    if (char === ']') return index;
-    index += 1;
-  }
-  return -1;
-}
-
-function parseQuotedMarkdownTitle(value, startIndex) {
-  const quote = value[startIndex];
-  if (quote !== '"' && quote !== "'") return null;
-
-  let index = startIndex + 1;
-  while (index < value.length) {
-    const char = value[index];
-    if (char === '\\') {
-      index += 2;
-      continue;
-    }
-    if (char === quote) return index + 1;
-    index += 1;
-  }
-
-  return null;
-}
-
-function parseParenthesizedMarkdownTitle(value, startIndex) {
-  if (value[startIndex] !== '(') return null;
-
-  let depth = 1;
-  let index = startIndex + 1;
-  while (index < value.length) {
-    const char = value[index];
-    if (char === '\\') {
-      index += 2;
-      continue;
-    }
-    if (char === '(') {
-      depth += 1;
-    } else if (char === ')') {
-      depth -= 1;
-      if (depth === 0) return index + 1;
-    }
-    index += 1;
-  }
-
-  return null;
-}
-
-function parseMarkdownImageTitleAndClose(value, startIndex) {
-  let index = startIndex;
-  while (/\s/.test(value[index] || '')) index += 1;
-  if (value[index] === ')') return index + 1;
-
-  const titleEnd = value[index] === '('
-    ? parseParenthesizedMarkdownTitle(value, index)
-    : parseQuotedMarkdownTitle(value, index);
-  if (!titleEnd) return null;
-
-  index = titleEnd;
-  while (/\s/.test(value[index] || '')) index += 1;
-  return value[index] === ')' ? index + 1 : null;
-}
-
-function parseMarkdownImageTargetAt(value, openParenIndex) {
-  let index = openParenIndex + 1;
-  while (/\s/.test(value[index] || '')) index += 1;
-
-  if (value[index] === '<') {
-    const targetStart = index + 1;
-    index += 1;
-    while (index < value.length) {
-      if (value[index] === '\\') {
-        index += 2;
-        continue;
-      }
-      if (value[index] === '>') {
-        const target = value.slice(targetStart, index);
-        index += 1;
-        const endIndex = parseMarkdownImageTitleAndClose(value, index);
-        if (!endIndex) return null;
-        return { rawTarget: target, endIndex };
-      }
-      index += 1;
-    }
-    return null;
-  }
-
-  const targetStart = index;
-  let depth = 0;
-  while (index < value.length) {
-    const char = value[index];
-    if (char === '\\') {
-      index += 2;
-      continue;
-    }
-    if (/\s/.test(char) && depth === 0) {
-      const target = value.slice(targetStart, index);
-      const endIndex = parseMarkdownImageTitleAndClose(value, index);
-      if (!endIndex) return null;
-      return { rawTarget: target, endIndex };
-    }
-    if (char === '(') {
-      depth += 1;
-    } else if (char === ')') {
-      if (depth > 0) {
-        depth -= 1;
-      } else {
-        return {
-          rawTarget: value.slice(targetStart, index),
-          endIndex: index + 1,
-        };
-      }
-    }
-    index += 1;
-  }
-
-  return null;
-}
-
-function replaceLocalMarkdownImagesInLine(line, protectedRanges) {
-  const value = String(line || '');
-  let output = '';
-  let cursor = 0;
-
-  while (cursor < value.length) {
-    const start = value.indexOf('![', cursor);
-    if (start === -1) {
-      output += value.slice(cursor);
-      break;
-    }
-
-    output += value.slice(cursor, start);
-
-    const closeBracketIndex = findClosingMarkdownBracket(value, start + 2);
-    const openParenIndex = closeBracketIndex >= 0 ? closeBracketIndex + 1 : -1;
-    const parsedTarget = openParenIndex >= 0 && value[openParenIndex] === '('
-      ? parseMarkdownImageTargetAt(value, openParenIndex)
-      : null;
-    if (!parsedTarget) {
-      output += value[start];
-      cursor = start + 1;
-      continue;
-    }
-
-    const rawAlt = value.slice(start + 2, closeBracketIndex);
-    const match = value.slice(start, parsedTarget.endIndex);
-    if (
-      isOffsetInRanges(start, protectedRanges)
-      || value[start - 1] === '['
-      || value[start - 1] === '\\'
-    ) {
-      output += match;
-      cursor = parsedTarget.endIndex;
-      continue;
-    }
-
-    const src = parseImageSwipeMarkdownTarget(parsedTarget.rawTarget);
-    if (!shouldMaterializeLocalMarkdownImage(src)) {
-      output += match;
-      cursor = parsedTarget.endIndex;
-      continue;
-    }
-
-    output += `<img src="${escapeImageSwipeHtmlAttr(encodeMarkdownImageSrc(src))}" alt="${escapeImageSwipeHtmlAttr(String(rawAlt || '').trim())}">`;
-    cursor = parsedTarget.endIndex;
-  }
-
-  return output;
-}
-
-function parseImageSwipeMarkdownTarget(rawTarget) {
-  const value = String(rawTarget || '').trim();
-  if (!value) return '';
-
-  if (value.startsWith('<')) {
-    const endIndex = value.indexOf('>');
-    if (endIndex > 1) return value.slice(1, endIndex).trim();
-  }
-
-  const titledMatch = value.match(/^(.+?)\s+(['"]).*\2\s*$/);
-  return (titledMatch ? titledMatch[1] : value).trim();
-}
-
-function parseImageSwipeMarkdownLine(line) {
-  const value = String(line || '').trim();
-  const wikiMatch = value.match(/^!\[\[([^\]|]+)(?:\|([^\]]+))?]]$/);
-  if (wikiMatch) {
-    return {
-      src: encodeURI(String(wikiMatch[1] || '').trim()),
-      alt: String(wikiMatch[2] || '').trim(),
-    };
-  }
-
-  const markdownMatch = value.match(/^!\[([^\]]*)]\(([\s\S]+)\)$/);
-  if (!markdownMatch) return null;
-  const src = parseImageSwipeMarkdownTarget(markdownMatch[2]);
-  if (!src) return null;
-
-  return {
-    src: encodeURI(src),
-    alt: String(markdownMatch[1] || '').trim(),
-  };
-}
-
-function materializeLocalMarkdownImages(markdown) {
-  const lines = String(markdown || '').split('\n');
-  const output = [];
-  let fenceState = null;
-  let inMathFence = false;
-  let rawHtmlBlockTag = '';
-  let inHtmlComment = false;
-
-  for (const line of lines) {
-    const fenceDelimiter = parseFencedBlockDelimiter(line);
-    if (!inMathFence && fenceDelimiter) {
-      if (!fenceState) {
-        fenceState = fenceDelimiter;
-      } else if (
-        fenceDelimiter.marker === fenceState.marker &&
-        fenceDelimiter.length >= fenceState.length
-      ) {
-        fenceState = null;
-      }
-      output.push(line);
-      continue;
-    }
-
-    if (!fenceState && isMathFenceDelimiter(line)) {
-      inMathFence = !inMathFence;
-      output.push(line);
-      continue;
-    }
-
-    if (fenceState || inMathFence) {
-      output.push(line);
-      continue;
-    }
-
-    if (inHtmlComment) {
-      output.push(line);
-      if (String(line || '').includes('-->')) {
-        inHtmlComment = false;
-      }
-      continue;
-    }
-
-    if (rawHtmlBlockTag) {
-      output.push(line);
-      if (new RegExp(`</${rawHtmlBlockTag}\\s*>`, 'i').test(String(line || ''))) {
-        rawHtmlBlockTag = '';
-      }
-      continue;
-    }
-
-    if (/^(?: {4}|\t)/.test(String(line || ''))) {
-      output.push(line);
-      continue;
-    }
-
-    if (/^\s{0,3}<!--/.test(String(line || '')) && !String(line || '').includes('-->')) {
-      inHtmlComment = true;
-      output.push(line);
-      continue;
-    }
-
-    const rawBlockMatch = String(line || '').match(/^\s{0,3}<([A-Za-z][\w:-]*)(?:\s[^<>]*)?>\s*$/);
-    const rawBlockTag = String(rawBlockMatch?.[1] || '').toLowerCase();
-    const isSelfClosingRawBlock = /\/\s*>\s*$/.test(String(line || ''));
-    if (
-      rawBlockMatch
-      && !isHtmlVoidTag(rawBlockTag)
-      && !isSelfClosingRawBlock
-      && !new RegExp(`</${rawBlockTag}\\s*>`, 'i').test(String(line || ''))
-    ) {
-      rawHtmlBlockTag = rawBlockTag;
-      output.push(line);
-      continue;
-    }
-
-    const protectedRanges = [
-      ...findInlineCodeRanges(line),
-      ...findHtmlTagRanges(line),
-      ...findHtmlElementContentRanges(line),
-      ...findMarkdownLinkLabelRanges(line),
-    ];
-
-    output.push(replaceLocalMarkdownImagesInLine(line, protectedRanges));
-  }
-
-  return output.join('\n');
-}
-
-function extractImageSwipeItalicCaption(lines, imageIndex) {
-  for (let i = imageIndex + 1; i < lines.length; i += 1) {
-    const line = String(lines[i] || '').trim();
-    if (!line) continue;
-    if (parseImageSwipeMarkdownLine(line)) return '';
-    const match = line.match(/^(?:\*|_)(.+?)(?:\*|_)$/);
-    return match ? String(match[1] || '').trim() : '';
-  }
-  return '';
-}
-
-function collectImageSwipeImages(blockLines) {
-  const images = [];
-  for (let i = 0; i < blockLines.length; i += 1) {
-    const image = parseImageSwipeMarkdownLine(blockLines[i]);
-    if (!image) continue;
-    const caption = image.alt || extractImageSwipeItalicCaption(blockLines, i);
-    images.push({ ...image, alt: caption });
-  }
-  return images;
-}
-
-function renderImageSwipeHtmlBlock(type, blockLines, optionText) {
-  const images = collectImageSwipeImages(blockLines);
-  if (!images.length) return null;
-
-  const attrs = [
-    'data-owc-image-swipe="1"',
-    `data-owc-image-swipe-type="${type}"`,
-  ];
-  if (type === 'image-sensitive') {
-    attrs.push(`data-owc-image-swipe-warning="${escapeImageSwipeHtmlAttr(encodeImageSwipeValue(optionText || IMAGE_SWIPE_DEFAULT_WARNING))}"`);
-  } else {
-    attrs.push(`data-owc-image-swipe-hint="${escapeImageSwipeHtmlAttr(encodeImageSwipeValue(optionText || IMAGE_SWIPE_DEFAULT_HINT))}"`);
-  }
-
-  return [
-    `<section ${attrs.join(' ')}>`,
-    ...images.map((image) => `<img src="${escapeImageSwipeHtmlAttr(image.src)}" alt="${escapeImageSwipeHtmlAttr(image.alt)}">`),
-    '</section>',
-  ];
-}
-
-function parseImageSwipeCalloutOpen(line) {
-  const match = String(line || '').match(/^\s{0,3}>\s?\[!\s*([a-z-]+)\s*](?:[+-])?\s*(.*)$/i);
-  if (!match) return null;
-  const type = String(match[1] || '').toLowerCase();
-  if (!IMAGE_SWIPE_TYPES.has(type)) return null;
-  return {
-    type,
-    optionText: String(match[2] || '').trim(),
-  };
-}
-
-function stripSingleQuotePrefix(line) {
-  return String(line || '').replace(/^\s{0,3}>\s?/, '');
-}
-
-function preprocessImageSwipeCallouts(markdown) {
-  const lines = String(markdown || '').split('\n');
-  const output = [];
-  let fenceState = null;
-  let inMathFence = false;
-
-  for (let i = 0; i < lines.length;) {
-    const fenceDelimiter = parseFencedBlockDelimiter(lines[i]);
-    if (fenceDelimiter) {
-      if (!fenceState) {
-        fenceState = fenceDelimiter;
-      } else if (
-        fenceDelimiter.marker === fenceState.marker &&
-        fenceDelimiter.length >= fenceState.length
-      ) {
-        fenceState = null;
-      }
-      output.push(lines[i]);
-      i += 1;
-      continue;
-    }
-
-    if (!fenceState && isMathFenceDelimiter(lines[i])) {
-      inMathFence = !inMathFence;
-      output.push(lines[i]);
-      i += 1;
-      continue;
-    }
-
-    if (fenceState || inMathFence) {
-      output.push(lines[i]);
-      i += 1;
-      continue;
-    }
-
-    const callout = parseImageSwipeCalloutOpen(lines[i]);
-    if (!callout) {
-      output.push(lines[i]);
-      i += 1;
-      continue;
-    }
-
-    const originalLines = [lines[i]];
-    const blockLines = [];
-    i += 1;
-    while (i < lines.length && isQuoteLine(lines[i])) {
-      originalLines.push(lines[i]);
-      blockLines.push(stripSingleQuotePrefix(lines[i]));
-      i += 1;
-    }
-
-    const rendered = renderImageSwipeHtmlBlock(callout.type, blockLines, callout.optionText);
-    if (rendered) {
-      output.push(...rendered);
-    } else {
-      output.push(...originalLines);
-    }
-  }
-
-  return output.join('\n');
 }
 
 /**
  * Preprocess markdown for triplet rendering.
  * Returns an object with processed markdown and pre-rendered math formulas.
  * This function is pure - no global state is used.
- * @returns {{ markdown: string, mathFormulas: Array }}
+ * @param {string} markdown
+ * @param {ConverterLike | null | undefined} converter
+ * @returns {TripletPreprocessResult}
  */
 function preprocessMarkdownForTriplet(markdown, converter) {
   let output = preprocessImageSwipeCallouts(markdown);
+  output = normalizeAdjacentMarkdownBlockHeadings(output);
 
   // Align with converter.convert preprocessing to reduce non-semantic parity noise.
   output = output.replace(/^[\t ]+(\$\$)/gm, '$1');
-  output = output.replace(/!\[\[([^\[\]|]+)(?:\|([^\[\]]+))?\]\]/g, (match, imagePath, alt) => {
+  output = output.replace(/!\[\[([^[\]|]+)(?:\|([^[\]]+))?]]/g, (match, imagePath, alt) => {
     const normalizedPath = String(imagePath || '').trim();
     return `![${alt || getImageCaptionFromPath(normalizedPath)}](${encodeURI(normalizedPath)})`;
   });
@@ -1060,6 +630,7 @@ function preprocessMarkdownForTriplet(markdown, converter) {
   // This is needed because Obsidian's MarkdownRenderer.renderMarkdown doesn't render LaTeX
   const { markdown: mathProcessed, formulas: mathFormulas } = preRenderMathFormulas(output, converter);
   output = mathProcessed;
+  output = normalizeWechatUnsafeTaskListMarkers(output);
 
   // Escape pseudo-HTML tags that look like HTML but are actually text
   // For example: <Title>_xxx_MS.pdf should render as text, not as an HTML tag
@@ -1075,9 +646,10 @@ function preprocessMarkdownForTriplet(markdown, converter) {
   return { markdown: output, mathFormulas };
 }
 
+/** @param {Element | null | undefined} root */
 function countUnresolvedImageEmbeds(root) {
   if (!root) return 0;
-  const embeds = Array.from(root.querySelectorAll('span.internal-embed,span.image-embed,div.internal-embed,div.image-embed'));
+  const embeds = findAllElements(root, 'span.internal-embed,span.image-embed,div.internal-embed,div.image-embed');
   let unresolved = 0;
   for (const embed of embeds) {
     const isImageEmbed = embed.classList.contains('image-embed');
@@ -1089,6 +661,7 @@ function countUnresolvedImageEmbeds(root) {
   return unresolved;
 }
 
+/** @param {string} markdown */
 function shouldObserveMermaidRenderWindow(markdown) {
   const lines = String(markdown || '').split('\n');
   let fenceState = null;
@@ -1114,9 +687,22 @@ function shouldObserveMermaidRenderWindow(markdown) {
   return false;
 }
 
+/**
+ * @param {Element | null | undefined} root
+ * @returns {Element[]}
+ */
 function collectMermaidHostElements(root) {
-  if (!root || typeof root.querySelectorAll !== 'function') return [];
-  const elements = Array.from(root.querySelectorAll('*')).filter((el) => hasMermaidMarker(el));
+  if (!root) return [];
+  const elements = findAllElements(root, '*').filter((el) => {
+    const values = [
+      el.getAttribute?.('class'),
+      el.getAttribute?.('id'),
+      el.getAttribute?.('data-type'),
+      el.getAttribute?.('aria-label'),
+      el.getAttribute?.('aria-roledescription'),
+    ].filter(Boolean).join(' ').toLowerCase();
+    return values.includes('mermaid');
+  });
   return elements.filter((el) => {
     if (el.closest('mjx-container')) return false;
     const tagName = el.tagName?.toLowerCase?.();
@@ -1125,20 +711,28 @@ function collectMermaidHostElements(root) {
   });
 }
 
+/** @param {Element | null | undefined} root */
 function countRenderedMermaidDiagrams(root) {
-  if (!root || typeof root.querySelectorAll !== 'function') return 0;
-  const svgCount = Array.from(root.querySelectorAll('svg')).filter(looksLikeMermaidSvg).length;
-  const imageCount = root.querySelectorAll('img.mermaid-diagram-image').length;
+  if (!root) return 0;
+  const svgCount = findAllElements(root, 'svg').filter((svg) => {
+    if (svg.closest?.('mjx-container,mjx-math,.MathJax')) return false;
+    return !!svg.closest?.('.mermaid,[data-obsidian-wechat-mermaid="true"]');
+  }).length;
+  const imageCount = findAllElements(root, 'img.mermaid-diagram-image').length;
   return svgCount + imageCount;
 }
 
+/** @param {Element | null | undefined} root */
 function countPendingMermaidHosts(root) {
   const hosts = collectMermaidHostElements(root);
   let pending = 0;
   for (const host of hosts) {
     if (host.tagName?.toLowerCase?.() === 'svg') continue;
     if (host.tagName?.toLowerCase?.() === 'img' && host.classList.contains('mermaid-diagram-image')) continue;
-    const hasRenderedSvg = Array.from(host.querySelectorAll('svg')).some(looksLikeMermaidSvg);
+    const hasRenderedSvg = findAllElements(host, 'svg').some((svg) => {
+      if (svg.closest?.('mjx-container,mjx-math,.MathJax')) return false;
+      return !!svg.closest?.('.mermaid,[data-obsidian-wechat-mermaid="true"]');
+    });
     const hasRenderedImage = !!host.querySelector('img.mermaid-diagram-image');
     if (!hasRenderedSvg && !hasRenderedImage) {
       pending += 1;
@@ -1147,10 +741,12 @@ function countPendingMermaidHosts(root) {
   return pending;
 }
 
+/** @param {string} label */
 function normalizeReferenceLabel(label) {
   return String(label || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/** @param {string} rawTarget */
 function extractInlineImageTarget(rawTarget) {
   const value = String(rawTarget || '').trim();
   if (!value) return '';
@@ -1163,11 +759,17 @@ function extractInlineImageTarget(rawTarget) {
   return value.split(/\s+/)[0] || '';
 }
 
+/**
+ * @param {string} markdown
+ * @returns {string[]}
+ */
 function collectImageTargets(markdown) {
   const source = String(markdown || '');
+  /** @type {string[]} */
   const targets = [];
   if (!source || !source.includes('![')) return targets;
 
+  /** @type {Map<string, string>} */
   const referenceTargets = new Map();
   const referenceDefinitionPattern = /^\s{0,3}\[([^\]]+)\]:\s*(?:<([^>\r\n]+)>|(\S+))/gm;
   let definitionMatch = referenceDefinitionPattern.exec(source);
@@ -1197,7 +799,7 @@ function collectImageTargets(markdown) {
     fullReferenceMatch = fullReferenceImagePattern.exec(source);
   }
 
-  const shortcutReferenceImagePattern = /!\[([^\]]+)](?![\[(])/g;
+  const shortcutReferenceImagePattern = /!\[([^\]]+)](?![[(])/g;
   let shortcutReferenceMatch = shortcutReferenceImagePattern.exec(source);
   while (shortcutReferenceMatch) {
     const label = normalizeReferenceLabel(shortcutReferenceMatch[1]);
@@ -1208,6 +810,7 @@ function collectImageTargets(markdown) {
   return targets;
 }
 
+/** @param {string} markdown */
 function shouldObserveAsyncEmbedWindow(markdown) {
   const source = String(markdown || '');
   if (!source || !source.includes('![')) return false;
@@ -1237,6 +840,10 @@ function shouldObserveAsyncEmbedWindow(markdown) {
   return false;
 }
 
+/**
+ * @param {Element | null | undefined} root
+ * @param {TripletSettleOptions} [options]
+ */
 async function waitForTripletDomToSettle(root, options = {}) {
   if (!root) return;
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 500;
@@ -1267,8 +874,7 @@ async function waitForTripletDomToSettle(root, options = {}) {
   // while still catching delayed async embed insertion after render.
   if (unresolved === 0 && renderedMermaid === 0 && pendingMermaid === 0 && initialObserveMs > 0) {
     while (Date.now() - start < initialObserveMs) {
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
       unresolved = countUnresolvedImageEmbeds(root);
       renderedMermaid = observeMermaid ? countRenderedMermaidDiagrams(root) : 0;
       pendingMermaid = observeMermaid ? countPendingMermaidHosts(root) : 0;
@@ -1293,18 +899,20 @@ async function waitForTripletDomToSettle(root, options = {}) {
     } else {
       stableCount = 0;
     }
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
   }
 }
 
+/**
+ * @param {ObsidianRendererOptions} options
+ */
 async function renderByObsidianMarkdownRenderer({
   app,
   markdown,
   sourcePath,
   targetEl,
   component = null,
-  markdownRenderer = MarkdownRenderer,
+  markdownRenderer = getDefaultMarkdownRenderer(),
 }) {
   if (!markdownRenderer) {
     throw new Error('Obsidian MarkdownRenderer is not available');
@@ -1324,6 +932,17 @@ async function renderByObsidianMarkdownRenderer({
   throw new Error('Obsidian MarkdownRenderer does not expose renderMarkdown/render');
 }
 
+/**
+ * @param {TripletRenderOptions & {
+ *   settings?: TripletSettingsLike,
+ *   serializer?: TripletSerializerLike,
+ *   mermaidCodeRenderer?: MermaidCodeRendererLike,
+ *   mermaidRasterizer?: MermaidRasterizerLike,
+ *   mermaidApi?: unknown,
+ *   rasterizeMermaid?: boolean,
+ * }} options
+ * @returns {Promise<string>}
+ */
 async function renderObsidianTripletMarkdown({
   app,
   converter,
@@ -1331,22 +950,23 @@ async function renderObsidianTripletMarkdown({
   sourcePath = '',
   component = null,
   settings = {},
-  markdownRenderer = MarkdownRenderer,
+  markdownRenderer = getDefaultMarkdownRenderer(),
   serializer = serializeObsidianRenderedHtml,
-  mermaidCodeRenderer = renderMermaidCodeBlocks,
-  mermaidRasterizer = rasterizeRenderedMermaidDiagrams,
+  mermaidCodeRenderer = null,
+  mermaidRasterizer = null,
   mermaidApi = null,
   rasterizeMermaid = true,
   preserveSvgStyleTags = false,
 }) {
-  if (typeof document === 'undefined') {
+  const activeDocument = getActiveDocument();
+  if (!activeDocument) {
     throw new Error('Triplet renderer requires DOM environment');
   }
   if (!converter) {
     throw new Error('Triplet renderer requires converter runtime');
   }
 
-  const container = document.createElement('div');
+  const container = activeDocument.createElement('div');
   const { markdown: preparedMarkdown, mathFormulas } = preprocessMarkdownForTriplet(markdown, converter);
 
   const shouldObserveWindow = shouldObserveAsyncEmbedWindow(markdown) || shouldObserveAsyncEmbedWindow(preparedMarkdown);
@@ -1365,9 +985,10 @@ async function renderObsidianTripletMarkdown({
     minObserveMs: shouldObserveWindow ? void 0 : 0,
     observeMermaid: shouldObserveMermaid,
   });
-  await mermaidCodeRenderer(container, { mermaidApi });
-  normalizeRenderedMermaidDiagrams(container);
-  if (rasterizeMermaid !== false) {
+  if (typeof mermaidCodeRenderer === 'function') {
+    await mermaidCodeRenderer(container, { mermaidApi });
+  }
+  if (rasterizeMermaid !== false && typeof mermaidRasterizer === 'function') {
     await mermaidRasterizer(container);
   }
 
@@ -1387,9 +1008,10 @@ async function renderObsidianTripletMarkdown({
   return serializedHtml;
 }
 
-module.exports = {
+export {
   neutralizeUnsafeMarkdownLinks,
   neutralizePlainWikilinks,
+  normalizeWechatUnsafeTaskListMarkers,
   preprocessMarkdownForTriplet,
   injectHardBreaksForLegacyParity,
   normalizeRenderedDomPunctuation,

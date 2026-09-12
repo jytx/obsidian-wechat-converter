@@ -1,9 +1,38 @@
+/*
+## 核心功能
+
+覆盖 native renderer 相关行为的 Vitest 测试用例。
+
+## 输入
+
+接收被测模块、mock 的 Obsidian/jsdom 环境、fixture Markdown/HTML 和断言数据。
+
+## 输出
+
+输出自动化断言结果，保护渲染、同步、设置、安全或 UI 行为不回归。
+
+## 定位
+
+位于 tests/，是回归测试层；测试应描述用户可见或服务契约行为。
+
+## 依赖
+
+关键依赖：Vitest、项目 mock/helper，以及被测的 native renderer 模块。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 tests 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+const { getBundledThemeSource } = require('./helpers/theme-runtime-source.js');
 const {
   canUseNativePreviewFastPath,
   isSafeRawImageSrc,
+  normalizeWechatUnsafeTaskListMarkersForNative,
   preprocessMarkdownForNative,
   renderNativeMarkdown,
 } = require('../services/native-renderer');
@@ -22,7 +51,7 @@ describe('Native Renderer', () => {
     global.hljs = require('../lib/highlight.min.js');
     require('../lib/mathjax-plugin.js');
 
-    const themeCode = fs.readFileSync(path.resolve(__dirname, '../themes/apple-theme.js'), 'utf8');
+    const themeCode = getBundledThemeSource();
     const converterCode = fs.readFileSync(path.resolve(__dirname, '../converter.js'), 'utf8');
     (0, eval)(themeCode);
     (0, eval)(converterCode);
@@ -54,6 +83,22 @@ describe('Native Renderer', () => {
     expect(output).not.toContain('<iframe');
     expect(output).not.toContain('<img src="x"');
     expect(output).toContain('正常文本 **保留**');
+  });
+
+  it('should normalize task list markers for WeChat without touching fenced code', () => {
+    const input = [
+      '- [ ] 展位设计稿',
+      '  - [x] 已确认物料',
+      '',
+      '```md',
+      '- [ ] 代码块不改',
+      '```',
+    ].join('\n');
+
+    const output = normalizeWechatUnsafeTaskListMarkersForNative(input);
+    expect(output).toContain('- ☐ 展位设计稿');
+    expect(output).toContain('  - ☑ 已确认物料');
+    expect(output).toContain('```md\n- [ ] 代码块不改\n```');
   });
 
   it('should accept only approved raw image protocols', () => {
@@ -157,6 +202,40 @@ describe('Native Renderer', () => {
         markdown: '# title',
       })
     ).rejects.toThrow('Native converter is not ready');
+  });
+
+  it('should separate block html and following headings in native preprocessing', () => {
+    const output = preprocessMarkdownForNative([
+      '<figure><img src="https://example.com/a.png"></figure>',
+      '## 紧随其后的标题',
+    ].join('\n'));
+
+    expect(output).toContain('</figure>\n\n## 紧随其后的标题');
+  });
+
+  it('should separate markdown images and following headings in native preprocessing', () => {
+    const output = preprocessMarkdownForNative([
+      '![[attachments/音乐卡点调整.png]]',
+      '#### 图片后的四级标题',
+      '',
+      '![远程图](https://example.com/a.png)',
+      '### 远程图后的标题',
+    ].join('\n'));
+
+    expect(output).toContain('![[attachments/音乐卡点调整.png]]\n\n#### 图片后的四级标题');
+    expect(output).toContain('![远程图](https://example.com/a.png)\n\n### 远程图后的标题');
+  });
+
+  it('should not separate image-like lines and headings inside fenced code', () => {
+    const output = preprocessMarkdownForNative([
+      '```md',
+      '![[attachments/code.png]]',
+      '#### 代码里的标题',
+      '```',
+    ].join('\n'));
+
+    expect(output).toContain('![[attachments/code.png]]\n#### 代码里的标题');
+    expect(output).not.toContain('![[attachments/code.png]]\n\n#### 代码里的标题');
   });
 
   it('should keep native preprocessing even when legacy parity option is passed', async () => {

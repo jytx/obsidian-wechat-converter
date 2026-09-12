@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
 
 jobs:
   release:
@@ -25,7 +27,7 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       - name: Validate versions.json mapping
         run: |
@@ -65,17 +67,8 @@ jobs:
           mkdir -p node_modules/obsidian
           cp __mocks__/obsidian.js node_modules/obsidian/index.js
 
-      - name: Run tests
-        run: npm test -- --run
-
-      - name: Build
-        run: npm run build
-
-      - name: Package release artifact
-        run: npm run release:pack
-
-      - name: Validate release artifact
-        run: npm run release:validate
+      - name: Obsidian mobile and release readiness guard
+        run: npm run review:guard
 
       - name: Prepare release notes
         if: startsWith(github.ref, 'refs/tags/')
@@ -103,6 +96,15 @@ jobs:
             echo "⚠️ Release notes file not found: $NOTES_FILE"
           fi
 
+      - name: Attest release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
@@ -110,10 +112,8 @@ jobs:
           name: ${{ github.ref_name }}${{ steps.release_notes.outputs.found == 'true' && format(' - {0}', steps.release_notes.outputs.title) || '' }}
           body_path: ${{ steps.release_notes.outputs.body_file }}
           files: |
-            obsidian-wechat-converter.zip
             main.js
             manifest.json
             styles.css
-            versions.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

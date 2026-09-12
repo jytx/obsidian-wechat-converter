@@ -1,3 +1,30 @@
+/*
+## 核心功能
+
+提供 measure native latency 开发脚本，服务构建、校验、生成或发布前检查。
+
+## 输入
+
+接收命令行参数、package scripts、仓库源码文件和生成物状态。
+
+## 输出
+
+输出终端校验结果、生成文件、失败退出码或发布前诊断信息。
+
+## 定位
+
+位于 scripts/，只处理仓库工程化任务，不被 Obsidian 插件运行时直接加载。
+
+## 依赖
+
+关键依赖：`fs`、`path`、`perf_hooks`、`url`、`module`、`jsdom`、`../tests/helpers/render-runtime`、`../services/render-pipeline`。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 scripts 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
 import fs from 'fs';
 import path from 'path';
 import { performance } from 'perf_hooks';
@@ -159,14 +186,12 @@ async function runRound({ corpus, measure, options }) {
   const warmupFixture = corpus[0]?.fixture || 'control-micro.md';
   const warmupMarkdown = readFixture(warmupFixture);
   for (let i = 0; i < options.warmup; i += 1) {
-    // eslint-disable-next-line no-await-in-loop
     await measure(warmupMarkdown, `warmup/${i}.md`);
   }
 
   const openSamples = [];
   for (const sample of corpus) {
     const markdown = readFixture(sample.fixture);
-    // eslint-disable-next-line no-await-in-loop
     const elapsed = await measure(markdown, sample.sourcePath || sample.fixture);
     openSamples.push(elapsed);
   }
@@ -181,7 +206,6 @@ async function runRound({ corpus, measure, options }) {
   for (let i = 0; i < options.switchIterations; i += 1) {
     const sample = switchFixtures[i % switchFixtures.length];
     const markdown = readFixture(sample.fixture);
-    // eslint-disable-next-line no-await-in-loop
     const elapsed = await measure(markdown, sample.sourcePath || sample.fixture);
     switchSamples.push(elapsed);
   }
@@ -190,7 +214,6 @@ async function runRound({ corpus, measure, options }) {
   const editBase = readFixture(corpus[0]?.fixture || 'control-main.md');
   for (let i = 0; i < options.editIterations; i += 1) {
     const edited = `${editBase}\n\n<!-- synthetic-edit-${i} -->\n`;
-    // eslint-disable-next-line no-await-in-loop
     const elapsed = await measure(edited, corpus[0]?.sourcePath || 'fixtures/control-main.md');
     editSamples.push(elapsed);
   }
@@ -240,7 +263,6 @@ async function main() {
 
   const rounds = [];
   for (let i = 0; i < options.rounds; i += 1) {
-    // eslint-disable-next-line no-await-in-loop
     const round = await runRound({ corpus, measure, options });
     rounds.push(round);
   }

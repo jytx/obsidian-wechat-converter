@@ -1,18 +1,54 @@
-const {
+/*
+## 核心功能
+
+提供服务层通用能力：ai layout skill bundle。
+
+## 输入
+
+接收上游视图、转换器、同步服务或工具脚本传入的数据。
+
+## 输出
+
+输出 `AI_LAYOUT_SKILL_VERSION`、`AI_LAYOUT_SELECTION_AUTO`、`AI_LAYOUT_FAMILIES`、`AI_LAYOUT_COLOR_PALETTES`、`AI_LAYOUT_ALLOWED_BLOCKS`、`AI_LAYOUT_SKILL_SYSTEM_LINES`、`AI_LAYOUT_OUTPUT_FIELDS`、`getAiLayoutBlockConstraintLines`、`getAiLayoutTemplate`、`validateAiLayoutPayload`，供项目内其他模块复用。
+
+## 定位
+
+位于 services/，是共享服务模块；保持输入输出清晰，避免引入 UI 状态耦合。
+
+## 依赖
+
+关键依赖：`./ai-layout-runtime/registry.js`。
+
+## 维护规则
+
+- 修改逻辑后同步更新本文件说明书，并检查 services 的文件夹 README 是否仍准确。
+- 保持职责边界清晰，跨层行为优先通过既有服务、视图或测试 helper 协作。
+*/
+
+import {
   loadAiLayoutSkillRegistry,
   getAiLayoutSkillById,
   getAiLayoutSkillList,
   getAiLayoutSharedResources,
-} = require('./ai-layout-runtime/registry');
+} from './ai-layout-runtime/registry.js';
 
 const AI_LAYOUT_SELECTION_AUTO = 'auto';
-const registry = loadAiLayoutSkillRegistry();
+/**
+ * @typedef {{ type: string, fields: string[] }} AiLayoutBlockDefinition
+ * @typedef {{ path: string, message: string, fatal: boolean }} AiLayoutSchemaIssue
+ * @typedef {{ isValid: boolean, fatal: boolean, issueCount: number, issues: AiLayoutSchemaIssue[] }} AiLayoutValidationResult
+ */
+
 const shared = getAiLayoutSharedResources();
 
 const AI_LAYOUT_SKILL_VERSION = shared.version || '2026.03.25-alpha.1';
 const AI_LAYOUT_FAMILIES = getAiLayoutSkillList().map((skill) => skill.id);
 const AI_LAYOUT_COLOR_PALETTES = (shared.colorPalettes?.colorPalettes || []).map((item) => item.id);
-const AI_LAYOUT_ALLOWED_BLOCKS = (shared.blockCatalog?.blocks || []).map((block) => ({ ...block }));
+/** @type {AiLayoutBlockDefinition[]} */
+const AI_LAYOUT_ALLOWED_BLOCKS = (shared.blockCatalog?.blocks || []).map((block) => ({
+  type: String(block.type || ''),
+  fields: Array.isArray(block.fields) ? block.fields.map((field) => String(field || '')) : [],
+}));
 const AI_LAYOUT_OUTPUT_FIELDS = Array.isArray(shared.blockCatalog?.outputFields)
   ? shared.blockCatalog.outputFields.slice()
   : [
@@ -40,12 +76,37 @@ const AI_LAYOUT_SKILL_SYSTEM_LINES = [
   '如果 selection 为 auto，请根据内容推荐 recommendedLayoutFamily 和 recommendedColorPalette，并写入 resolved。',
   '如果 selection 已指定具体布局或颜色，resolved 必须尊重该选择。',
   'AI 编排最终会被渲染为微信安全 HTML，不能依赖额外 style 标签或 class 选择器。',
+  '公众号可见文本里不要输出裸 Markdown 源码，例如 - [ ]、- [x]、## 标题、|---|、代码围栏。',
+  '原文任务清单必须转换成公众号安全文本：未完成项用 ☐ 事项，完成项用 ☑ 事项；不要保留 [ ] 或 [x]。',
+  '长清单项要拆成主项和说明，或放入 bulletGroups / paragraphs，避免手机端出现圆点 + [ ] + 长括号导致缩进错位。',
 ];
 
 function getAiLayoutBlockConstraintLines() {
   return AI_LAYOUT_ALLOWED_BLOCKS.map((block) => `- ${block.type}: ${block.fields.join(', ')}`);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isPlainRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function optionalString(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * @param {string} path
+ * @param {string} message
+ * @param {boolean} [fatal=false]
+ * @returns {AiLayoutSchemaIssue}
+ */
 function createSchemaIssue(path, message, fatal = false) {
   return {
     path,
@@ -54,6 +115,10 @@ function createSchemaIssue(path, message, fatal = false) {
   };
 }
 
+/**
+ * @param {unknown} field
+ * @returns {string}
+ */
 function normalizeBlockFieldKey(field) {
   const normalized = String(field || '').trim();
   if (!normalized) return normalized;
@@ -62,23 +127,33 @@ function normalizeBlockFieldKey(field) {
   return bracketIndex === -1 ? normalized : normalized.slice(0, bracketIndex);
 }
 
+/**
+ * @param {unknown} rawLayout
+ * @returns {AiLayoutValidationResult}
+ */
 function validateAiLayoutPayload(rawLayout) {
+  /** @type {AiLayoutSchemaIssue[]} */
   const issues = [];
   const allowedBlockTypes = new Set(AI_LAYOUT_ALLOWED_BLOCKS.map((block) => block.type));
   const allowedLayoutFamilies = new Set(AI_LAYOUT_FAMILIES);
   const allowedColorPalettes = new Set(AI_LAYOUT_COLOR_PALETTES);
   const fieldMap = new Map(AI_LAYOUT_ALLOWED_BLOCKS.map((block) => [block.type, new Set(['type', ...block.fields.map((field) => normalizeBlockFieldKey(field)).filter(Boolean)])]));
   if (fieldMap.has('section-block')) {
-    fieldMap.get('section-block').add('callouts');
+    fieldMap.get('section-block')?.add('callouts');
   }
 
+  /**
+   * @param {unknown} value
+   * @param {string} path
+   * @returns {void}
+   */
   const validateCalloutArray = (value, path) => {
     if (!Array.isArray(value)) {
       issues.push(createSchemaIssue(path, `${path.split('.').pop()} 必须是数组。`, false));
       return;
     }
     value.forEach((callout, calloutIndex) => {
-      if (!callout || typeof callout !== 'object' || Array.isArray(callout)) {
+      if (!isPlainRecord(callout)) {
         issues.push(createSchemaIssue(`${path}[${calloutIndex}]`, 'callout 必须是对象。', false));
         return;
       }
@@ -94,7 +169,7 @@ function validateAiLayoutPayload(rawLayout) {
     });
   };
 
-  if (!rawLayout || typeof rawLayout !== 'object' || Array.isArray(rawLayout)) {
+  if (!isPlainRecord(rawLayout)) {
     issues.push(createSchemaIssue('$', '顶层必须是一个 JSON 对象。', true));
     return {
       isValid: false,
@@ -103,31 +178,32 @@ function validateAiLayoutPayload(rawLayout) {
       issues,
     };
   }
+  const layout = rawLayout;
 
   const requiredTopLevelFields = ['articleType', 'selection', 'resolved', 'title', 'summary', 'blocks'];
   requiredTopLevelFields.forEach((field) => {
-    if (!(field in rawLayout)) {
+    if (!(field in layout)) {
       issues.push(createSchemaIssue(`$.${field}`, `缺少顶层字段 ${field}。`, field === 'blocks'));
       return;
     }
     if (field === 'blocks') {
-      if (!Array.isArray(rawLayout.blocks)) {
+      if (!Array.isArray(layout.blocks)) {
         issues.push(createSchemaIssue('$.blocks', 'blocks 必须是数组。', true));
       }
       return;
     }
-    if ((field === 'selection' || field === 'resolved') && (typeof rawLayout[field] !== 'object' || !rawLayout[field] || Array.isArray(rawLayout[field]))) {
+    if ((field === 'selection' || field === 'resolved') && !isPlainRecord(layout[field])) {
       issues.push(createSchemaIssue(`$.${field}`, `${field} 必须是对象。`, true));
       return;
     }
-    if (field !== 'selection' && field !== 'resolved' && typeof rawLayout[field] !== 'string') {
+    if (field !== 'selection' && field !== 'resolved' && typeof layout[field] !== 'string') {
       issues.push(createSchemaIssue(`$.${field}`, `${field} 必须是字符串。`, false));
     }
   });
 
-  if (rawLayout.selection && typeof rawLayout.selection === 'object' && !Array.isArray(rawLayout.selection)) {
-    const selectionLayoutFamily = String(rawLayout.selection.layoutFamily || '').trim();
-    const selectionColorPalette = String(rawLayout.selection.colorPalette || '').trim();
+  if (isPlainRecord(layout.selection)) {
+    const selectionLayoutFamily = optionalString(layout.selection.layoutFamily).trim();
+    const selectionColorPalette = optionalString(layout.selection.colorPalette).trim();
     if (!selectionLayoutFamily || (selectionLayoutFamily !== AI_LAYOUT_SELECTION_AUTO && !allowedLayoutFamilies.has(selectionLayoutFamily))) {
       issues.push(createSchemaIssue('$.selection.layoutFamily', 'selection.layoutFamily 必须是 auto 或合法的 layoutFamily。', true));
     }
@@ -136,9 +212,9 @@ function validateAiLayoutPayload(rawLayout) {
     }
   }
 
-  if (rawLayout.resolved && typeof rawLayout.resolved === 'object' && !Array.isArray(rawLayout.resolved)) {
-    const resolvedLayoutFamily = String(rawLayout.resolved.layoutFamily || '').trim();
-    const resolvedColorPalette = String(rawLayout.resolved.colorPalette || '').trim();
+  if (isPlainRecord(layout.resolved)) {
+    const resolvedLayoutFamily = optionalString(layout.resolved.layoutFamily).trim();
+    const resolvedColorPalette = optionalString(layout.resolved.colorPalette).trim();
     if (!allowedLayoutFamilies.has(resolvedLayoutFamily)) {
       issues.push(createSchemaIssue('$.resolved.layoutFamily', 'resolved.layoutFamily 必须是合法的 layoutFamily。', true));
     }
@@ -147,21 +223,21 @@ function validateAiLayoutPayload(rawLayout) {
     }
   }
 
-  if ('recommendedLayoutFamily' in rawLayout) {
-    const recommendedLayoutFamily = String(rawLayout.recommendedLayoutFamily || '').trim();
+  if ('recommendedLayoutFamily' in layout) {
+    const recommendedLayoutFamily = optionalString(layout.recommendedLayoutFamily).trim();
     if (recommendedLayoutFamily && !allowedLayoutFamilies.has(recommendedLayoutFamily)) {
       issues.push(createSchemaIssue('$.recommendedLayoutFamily', 'recommendedLayoutFamily 必须是合法的 layoutFamily。', false));
     }
   }
 
-  if ('recommendedColorPalette' in rawLayout) {
-    const recommendedColorPalette = String(rawLayout.recommendedColorPalette || '').trim();
+  if ('recommendedColorPalette' in layout) {
+    const recommendedColorPalette = optionalString(layout.recommendedColorPalette).trim();
     if (recommendedColorPalette && !allowedColorPalettes.has(recommendedColorPalette)) {
       issues.push(createSchemaIssue('$.recommendedColorPalette', 'recommendedColorPalette 必须是合法的 colorPalette。', false));
     }
   }
 
-  if (!Array.isArray(rawLayout.blocks)) {
+  if (!Array.isArray(layout.blocks)) {
     return {
       isValid: issues.length === 0,
       fatal: issues.some((issue) => issue.fatal),
@@ -170,9 +246,9 @@ function validateAiLayoutPayload(rawLayout) {
     };
   }
 
-  rawLayout.blocks.forEach((block, index) => {
+  layout.blocks.forEach((block, index) => {
     const path = `$.blocks[${index}]`;
-    if (!block || typeof block !== 'object' || Array.isArray(block)) {
+    if (!isPlainRecord(block)) {
       issues.push(createSchemaIssue(path, 'block 必须是对象。', true));
       return;
     }
@@ -180,27 +256,28 @@ function validateAiLayoutPayload(rawLayout) {
       issues.push(createSchemaIssue(`${path}.type`, 'block 缺少合法的 type。', true));
       return;
     }
-    if (!allowedBlockTypes.has(block.type)) {
+    const blockType = block.type;
+    if (!allowedBlockTypes.has(blockType)) {
       issues.push(createSchemaIssue(`${path}.type`, `不支持的 block type: ${block.type}。`, true));
       return;
     }
 
-    const allowedFields = fieldMap.get(block.type) || new Set(['type']);
+    const allowedFields = fieldMap.get(blockType) || new Set(['type']);
     Object.keys(block).forEach((key) => {
       if (!allowedFields.has(key)) {
-        issues.push(createSchemaIssue(`${path}.${key}`, `${block.type} 不支持字段 ${key}。`, false));
+        issues.push(createSchemaIssue(`${path}.${key}`, `${blockType} 不支持字段 ${key}。`, false));
       }
     });
 
-    if (block.type === 'hero' && typeof block.title !== 'string') {
+    if (blockType === 'hero' && typeof block.title !== 'string') {
       issues.push(createSchemaIssue(`${path}.title`, 'hero.title 必须是字符串。', false));
     }
-    if (block.type === 'part-nav') {
+    if (blockType === 'part-nav') {
       if (!Array.isArray(block.items)) {
         issues.push(createSchemaIssue(`${path}.items`, 'part-nav.items 必须是数组。', true));
       } else {
         block.items.forEach((item, itemIndex) => {
-          if (!item || typeof item !== 'object') {
+          if (!isPlainRecord(item)) {
             issues.push(createSchemaIssue(`${path}.items[${itemIndex}]`, 'part-nav item 必须是对象。', false));
             return;
           }
@@ -210,10 +287,10 @@ function validateAiLayoutPayload(rawLayout) {
         });
       }
     }
-    if (block.type === 'lead-quote' && typeof block.text !== 'string') {
+    if (blockType === 'lead-quote' && typeof block.text !== 'string') {
       issues.push(createSchemaIssue(`${path}.text`, 'lead-quote.text 必须是字符串。', false));
     }
-    if (block.type === 'case-block') {
+    if (blockType === 'case-block') {
       if ('bullets' in block && !Array.isArray(block.bullets)) {
         issues.push(createSchemaIssue(`${path}.bullets`, 'case-block.bullets 必须是数组。', false));
       }
@@ -221,7 +298,7 @@ function validateAiLayoutPayload(rawLayout) {
         issues.push(createSchemaIssue(`${path}.imageIds`, 'case-block.imageIds 必须是数组。', false));
       }
     }
-    if (block.type === 'section-block') {
+    if (blockType === 'section-block') {
       const isNumber = Number.isInteger(block.sectionIndex) && block.sectionIndex >= 0;
       const isNumericString = typeof block.sectionIndex === 'string' && /^\d+$/.test(block.sectionIndex.trim());
       if (!isNumber && !isNumericString) {
@@ -258,7 +335,7 @@ function validateAiLayoutPayload(rawLayout) {
           issues.push(createSchemaIssue(`${path}.subsections`, 'section-block.subsections 必须是数组。', false));
         } else {
           block.subsections.forEach((subsection, subsectionIndex) => {
-            if (!subsection || typeof subsection !== 'object' || Array.isArray(subsection)) {
+            if (!isPlainRecord(subsection)) {
               issues.push(createSchemaIssue(`${path}.subsections[${subsectionIndex}]`, 'subsection 必须是对象。', false));
               return;
             }
@@ -292,7 +369,7 @@ function validateAiLayoutPayload(rawLayout) {
         issues.push(createSchemaIssue(`${path}.imageIds`, 'section-block.imageIds 必须是数组。', false));
       }
     }
-    if (block.type === 'phone-frame' && typeof block.imageId !== 'string') {
+    if (blockType === 'phone-frame' && typeof block.imageId !== 'string') {
       issues.push(createSchemaIssue(`${path}.imageId`, 'phone-frame.imageId 必须是字符串。', true));
     }
   });
@@ -306,11 +383,23 @@ function validateAiLayoutPayload(rawLayout) {
   };
 }
 
-function getAiLayoutTemplate() {
-  return JSON.parse(JSON.stringify(shared.template));
+/**
+ * @template T
+ * @param {T} value
+ * @returns {T}
+ */
+function cloneJson(value) {
+  const serialized = JSON.stringify(value);
+  const parsed = /** @type {unknown} */ (JSON.parse(serialized));
+  return /** @type {T} */ (parsed);
 }
 
-module.exports = {
+/** @returns {Record<string, unknown>} */
+function getAiLayoutTemplate() {
+  return cloneJson(shared.template || {});
+}
+
+export {
   AI_LAYOUT_SKILL_VERSION,
   AI_LAYOUT_SELECTION_AUTO,
   AI_LAYOUT_FAMILIES,
@@ -321,7 +410,7 @@ module.exports = {
   getAiLayoutBlockConstraintLines,
   getAiLayoutTemplate,
   validateAiLayoutPayload,
-  getAiLayoutSkillRegistry: loadAiLayoutSkillRegistry,
+  loadAiLayoutSkillRegistry as getAiLayoutSkillRegistry,
   getAiLayoutSkillById,
   getAiLayoutSkillList,
   getAiLayoutSharedResources,
