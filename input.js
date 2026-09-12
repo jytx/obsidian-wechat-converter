@@ -1,4 +1,4 @@
-const { Plugin, MarkdownView, ItemView, Notice, Platform, requestUrl, request } = require('obsidian');
+const { Plugin, MarkdownView, ItemView, Notice, Platform, MarkdownRenderer, requestUrl, request } = require('obsidian');
 const { PluginSettingTab, Setting } = require('obsidian');
 const { createRenderPipelines } = require('./services/render-pipeline');
 const { buildRenderRuntime } = require('./services/dependency-loader');
@@ -1127,6 +1127,9 @@ class AppleStyleView extends ItemView {
               sourcePath: context.sourcePath || '',
               settings: context.settings || this.plugin.settings,
               component: this,
+              // 上游版默认值从 window.obsidian 全局兜底获取，Obsidian 运行时不可靠，
+              // 这里显式传入 require('obsidian') 拿到的 MarkdownRenderer
+              markdownRenderer: MarkdownRenderer,
               rasterizeMermaid: false,
               preserveSvgStyleTags: true,
             });
