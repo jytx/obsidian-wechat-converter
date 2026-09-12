@@ -5325,6 +5325,103 @@ var require_native_renderer = __commonJS({
   }
 });
 
+// services/external-link-footnotes.js
+var require_external_link_footnotes = __commonJS({
+  "services/external-link-footnotes.js"(exports2, module2) {
+    var MP_WEIXIN_LINK_REGEX = /^https?:\/\/mp\.weixin\.qq\.com\//i;
+    var DEFAULT_REFERENCES_TITLE = "References";
+    function isWechatInternalLink(href) {
+      return typeof href === "string" && MP_WEIXIN_LINK_REGEX.test(href.trim());
+    }
+    function buildFootnoteEntry(index, title, link, document2) {
+      const entry = document2.createElement("p");
+      entry.setAttribute("style", "margin:0;padding:0;");
+      const indexCode = document2.createElement("code");
+      indexCode.setAttribute("style", "font-size:90%;opacity:0.6;");
+      indexCode.textContent = `[${index}]`;
+      entry.appendChild(indexCode);
+      if (title && title !== link) {
+        const titleSeparator = document2.createTextNode(` ${title}: `);
+        entry.appendChild(titleSeparator);
+      } else {
+        const spacer = document2.createTextNode(" ");
+        entry.appendChild(spacer);
+      }
+      const urlItalic = document2.createElement("i");
+      urlItalic.setAttribute("style", "word-break:break-all;");
+      urlItalic.textContent = link;
+      entry.appendChild(urlItalic);
+      entry.appendChild(document2.createElement("br"));
+      return entry;
+    }
+    function buildReferencesSection(footnotes, title, accentColor, document2) {
+      const section = document2.createElement("section");
+      section.setAttribute(
+        "style",
+        `font-size:80%;margin:24px 8px 0;color:#999;word-break:break-all;`
+      );
+      const heading = document2.createElement("h4");
+      heading.setAttribute(
+        "style",
+        `margin:0 0 8px;font-size:14px;font-weight:bold;color:${accentColor};`
+      );
+      heading.textContent = title || DEFAULT_REFERENCES_TITLE;
+      section.appendChild(heading);
+      const list = document2.createElement("div");
+      footnotes.map(([index, entryTitle, link]) => buildFootnoteEntry(index, entryTitle, link, document2)).forEach((entry) => list.appendChild(entry));
+      section.appendChild(list);
+      return section;
+    }
+    function convertExternalLinksToFootnotes2(root, options) {
+      if (!root)
+        return;
+      if (typeof document === "undefined" && !root.ownerDocument)
+        return;
+      const doc = root.ownerDocument || document;
+      const config = options || {};
+      const accentColor = config.accentColor || "#576b95";
+      const referencesTitle = config.title || DEFAULT_REFERENCES_TITLE;
+      const allAnchors = Array.from(root.querySelectorAll("a[href]"));
+      const externalAnchors = allAnchors.filter((anchor) => {
+        const href = (anchor.getAttribute("href") || "").trim();
+        if (!href)
+          return false;
+        if (href.startsWith("#"))
+          return false;
+        return !isWechatInternalLink(href);
+      });
+      if (externalAnchors.length === 0)
+        return;
+      const footnotes = [];
+      const urlToIndex = /* @__PURE__ */ new Map();
+      externalAnchors.forEach((anchor) => {
+        const href = (anchor.getAttribute("href") || "").trim();
+        const text = (anchor.textContent || "").trim();
+        let index = urlToIndex.get(href);
+        if (index === void 0) {
+          index = footnotes.length + 1;
+          urlToIndex.set(href, index);
+          footnotes.push([index, text, href]);
+        }
+        const sup = doc.createElement("sup");
+        sup.setAttribute("style", `color:${accentColor};font-size:75%;`);
+        sup.textContent = `[${index}]`;
+        anchor.appendChild(sup);
+      });
+      const referencesSection = buildReferencesSection(footnotes, referencesTitle, accentColor, doc);
+      root.appendChild(referencesSection);
+    }
+    module2.exports = {
+      convertExternalLinksToFootnotes: convertExternalLinksToFootnotes2,
+      isWechatInternalLink,
+      buildReferencesSection,
+      buildFootnoteEntry,
+      MP_WEIXIN_LINK_REGEX,
+      DEFAULT_REFERENCES_TITLE
+    };
+  }
+});
+
 // services/ai-layout-runtime/generated-skills.js
 var require_generated_skills = __commonJS({
   "services/ai-layout-runtime/generated-skills.js"(exports2, module2) {
@@ -10161,6 +10258,7 @@ var require_wechat_sync = __commonJS({
           publishMeta,
           sessionCoverBase64,
           sessionDigest,
+          sessionTitle,
           sessionThumbMediaId,
           draftMediaId,
           onStatus,
@@ -10204,9 +10302,10 @@ var require_wechat_sync = __commonJS({
           }
           const cleanedResult = replaceUnuploadedDraftImagesWithPlaceholders(cleanHtmlForDraft(processedHtml));
           const cleanedHtml = cleanedResult.html;
-          const title = activeFile ? activeFile.basename : "\u65E0\u6807\u9898\u6587\u7AE0";
+          const fileBasename = activeFile ? activeFile.basename : "\u65E0\u6807\u9898\u6587\u7AE0";
+          const resolvedTitle = sessionTitle && sessionTitle.trim() || publishMeta && publishMeta.title && publishMeta.title.trim() || fileBasename;
           const article = {
-            title: title.substring(0, 64),
+            title: resolvedTitle.substring(0, 64),
             content: cleanedHtml,
             thumb_media_id: thumbMediaId,
             author: account.author || "",
@@ -11581,6 +11680,7 @@ var { resolveMarkdownSource } = require_markdown_source();
 var { normalizeVaultPath, isAbsolutePathLike } = require_path_utils();
 var { renderObsidianTripletMarkdown } = require_obsidian_triplet_renderer();
 var { canUseNativePreviewFastPath, renderNativeMarkdown } = require_native_renderer();
+var { convertExternalLinksToFootnotes } = require_external_link_footnotes();
 var { convertRenderedMermaidDiagramsToImages } = require_rendered_mermaid();
 var {
   AI_LAYOUT_SCHEMA_VERSION,
@@ -11726,6 +11826,8 @@ var DEFAULT_SETTINGS = {
   // 隐藏图片附件文件夹
   uploadOnPaste: false,
   // 粘贴时自动上传到微信
+  externalLinkFootnotes: false,
+  // 外链转底部引用（解决微信草稿外链无法点击）
   // 旧字段保留用于迁移检测
   wechatAppId: "",
   wechatAppSecret: "",
@@ -12105,6 +12207,7 @@ var AppleStyleView = class extends ItemView {
     this.lastActiveFile = null;
     this.sessionCoverBase64 = "";
     this.sessionDigest = "";
+    this.sessionTitle = "";
     this.articleStates = /* @__PURE__ */ new Map();
     this.svgUploadCache = /* @__PURE__ */ new Map();
     this.imageUploadCache = /* @__PURE__ */ new Map();
@@ -12309,7 +12412,64 @@ var AppleStyleView = class extends ItemView {
    * 注册同步滚动 (双向: Editor <-> Preview)
    * 采用"原子锁"机制 + "差值检测"机制，彻底解决死循环和精度问题
    */
+  /**
+   * 构建预览行号→绝对像素偏移映射表
+   * 必须在 innerHTML 赋值后、scrollTop 恢复前调用（此时 scrollTop=0）
+   * 利用 getBoundingClientRect 精确计算每个锚点元素在容器内的绝对位置
+   */
+  _buildScrollMap() {
+    if (!this.previewContainer)
+      return;
+    this._scrollMap = [];
+    const containerRect = this.previewContainer.getBoundingClientRect();
+    const elements = this.previewContainer.querySelectorAll("[data-line]");
+    for (const el of elements) {
+      const line = parseInt(el.getAttribute("data-line"), 10);
+      if (isNaN(line))
+        continue;
+      const elRect = el.getBoundingClientRect();
+      this._scrollMap.push({ line, top: elRect.top - containerRect.top });
+    }
+    this._scrollMap.sort((a, b) => a.top - b.top);
+  }
+  /**
+   * 在映射表中查找行号 <= targetLine 的最近条目（二分查找）
+   */
+  _findScrollMapByLine(targetLine) {
+    if (!this._scrollMap || this._scrollMap.length === 0)
+      return null;
+    let lo = 0, hi = this._scrollMap.length - 1, result = null;
+    while (lo <= hi) {
+      const mid = lo + hi >> 1;
+      if (this._scrollMap[mid].line <= targetLine) {
+        result = this._scrollMap[mid];
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return result;
+  }
+  /**
+   * 在映射表中根据 scrollTop 查找对应的行号（二分查找 top 值）
+   */
+  _findLineByScrollTop(scrollTop) {
+    if (!this._scrollMap || this._scrollMap.length === 0)
+      return -1;
+    let lo = 0, hi = this._scrollMap.length - 1, result = -1;
+    while (lo <= hi) {
+      const mid = lo + hi >> 1;
+      if (this._scrollMap[mid].top <= scrollTop + 10) {
+        result = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return result >= 0 ? this._scrollMap[result].line : -1;
+  }
   registerScrollSync(activeView) {
+    var _a;
     if (this.activeEditorScroller && this.editorScrollListener) {
       this.activeEditorScroller.removeEventListener("scroll", this.editorScrollListener);
     }
@@ -12321,12 +12481,15 @@ var AppleStyleView = class extends ItemView {
     this.previewScrollListener = null;
     this.ignoreNextPreviewScroll = false;
     this.ignoreNextEditorScroll = false;
+    this._editorRafPending = false;
+    this._previewRafPending = false;
     if (!activeView)
       return;
     const editorScroller = activeView.contentEl.querySelector(".cm-scroller");
     if (!editorScroller)
       return;
     this.activeEditorScroller = editorScroller;
+    const editorView = (_a = activeView.editor) == null ? void 0 : _a.cm;
     this.editorScrollListener = () => {
       if (!this.containerEl.offsetParent)
         return;
@@ -12336,23 +12499,50 @@ var AppleStyleView = class extends ItemView {
       }
       if (!this.previewContainer)
         return;
-      const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
-      const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
-      if (editorHeight <= 0 || previewHeight <= 0)
+      if (this._editorRafPending)
         return;
-      let targetScrollTop;
-      if (editorScroller.scrollTop === 0) {
-        targetScrollTop = 0;
-      } else if (Math.abs(editorScroller.scrollTop - editorHeight) < 2) {
-        targetScrollTop = previewHeight;
-      } else {
-        const ratio = editorScroller.scrollTop / editorHeight;
-        targetScrollTop = ratio * previewHeight;
-      }
-      if (Math.abs(this.previewContainer.scrollTop - targetScrollTop) > 1) {
-        this.ignoreNextPreviewScroll = true;
-        this.previewContainer.scrollTop = targetScrollTop;
-      }
+      this._editorRafPending = true;
+      requestAnimationFrame(() => {
+        this._editorRafPending = false;
+        if (editorScroller.scrollTop === 0) {
+          this.ignoreNextPreviewScroll = true;
+          this.previewContainer.scrollTop = 0;
+          return;
+        }
+        const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
+        const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
+        if (editorHeight > 0 && Math.abs(editorScroller.scrollTop - editorHeight) < 5) {
+          this.ignoreNextPreviewScroll = true;
+          this.previewContainer.scrollTop = previewHeight;
+          return;
+        }
+        if (editorView && this._scrollMap && this._scrollMap.length > 0) {
+          try {
+            const visibleRanges = editorView.visibleRanges;
+            if (visibleRanges && visibleRanges.length > 0) {
+              const line = editorView.state.doc.lineAt(visibleRanges[0].from).number - 1;
+              const entry = this._findScrollMapByLine(line);
+              if (entry) {
+                const targetScrollTop = Math.max(0, entry.top);
+                if (Math.abs(this.previewContainer.scrollTop - targetScrollTop) > 3) {
+                  this.ignoreNextPreviewScroll = true;
+                  this.previewContainer.scrollTop = targetScrollTop;
+                }
+                return;
+              }
+            }
+          } catch (e) {
+          }
+        }
+        if (editorHeight > 0 && previewHeight > 0) {
+          const ratio = editorScroller.scrollTop / editorHeight;
+          const targetScrollTop = ratio * previewHeight;
+          if (Math.abs(this.previewContainer.scrollTop - targetScrollTop) > 1) {
+            this.ignoreNextPreviewScroll = true;
+            this.previewContainer.scrollTop = targetScrollTop;
+          }
+        }
+      });
     };
     this.previewScrollListener = () => {
       if (!this.containerEl.offsetParent)
@@ -12361,23 +12551,50 @@ var AppleStyleView = class extends ItemView {
         this.ignoreNextPreviewScroll = false;
         return;
       }
-      const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
-      const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
-      if (editorHeight <= 0 || previewHeight <= 0)
+      if (this._previewRafPending)
         return;
-      let targetScrollTop;
-      if (this.previewContainer.scrollTop === 0) {
-        targetScrollTop = 0;
-      } else if (Math.abs(this.previewContainer.scrollTop - previewHeight) < 2) {
-        targetScrollTop = editorHeight;
-      } else {
-        const ratio = this.previewContainer.scrollTop / previewHeight;
-        targetScrollTop = ratio * editorHeight;
-      }
-      if (Math.abs(editorScroller.scrollTop - targetScrollTop) > 1) {
-        this.ignoreNextEditorScroll = true;
-        editorScroller.scrollTop = targetScrollTop;
-      }
+      this._previewRafPending = true;
+      requestAnimationFrame(() => {
+        this._previewRafPending = false;
+        if (this.previewContainer.scrollTop === 0) {
+          this.ignoreNextEditorScroll = true;
+          editorScroller.scrollTop = 0;
+          return;
+        }
+        const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
+        const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
+        if (previewHeight > 0 && Math.abs(this.previewContainer.scrollTop - previewHeight) < 5) {
+          this.ignoreNextEditorScroll = true;
+          editorScroller.scrollTop = editorHeight;
+          return;
+        }
+        if (this._scrollMap && this._scrollMap.length > 0 && editorView) {
+          const line = this._findLineByScrollTop(this.previewContainer.scrollTop);
+          if (line >= 0) {
+            try {
+              const docLine = editorView.state.doc.line(line + 1);
+              if (docLine) {
+                const block = editorView.lineBlockAt(docLine.from);
+                const targetScrollTop = Math.max(0, block.top);
+                if (Math.abs(editorScroller.scrollTop - targetScrollTop) > 3) {
+                  this.ignoreNextEditorScroll = true;
+                  editorScroller.scrollTop = targetScrollTop;
+                }
+                return;
+              }
+            } catch (e) {
+            }
+          }
+        }
+        if (editorHeight > 0 && previewHeight > 0) {
+          const ratio = this.previewContainer.scrollTop / previewHeight;
+          const targetScrollTop = ratio * editorHeight;
+          if (Math.abs(editorScroller.scrollTop - targetScrollTop) > 1) {
+            this.ignoreNextEditorScroll = true;
+            editorScroller.scrollTop = targetScrollTop;
+          }
+        }
+      });
     };
     editorScroller.addEventListener("scroll", this.editorScrollListener, { passive: true });
     this.previewContainer.addEventListener("scroll", this.previewScrollListener, { passive: true });
@@ -12399,23 +12616,35 @@ var AppleStyleView = class extends ItemView {
       this.converter = runtime.converter;
       const { nativePipeline } = createRenderPipelines({
         candidateRenderer: async (markdown, context = {}) => {
+          var _a, _b;
+          let html;
           if (canUseNativePreviewFastPath(markdown)) {
-            return renderNativeMarkdown({
+            html = await renderNativeMarkdown({
               converter: this.converter,
               markdown,
               sourcePath: context.sourcePath || ""
             });
+          } else {
+            html = await renderObsidianTripletMarkdown({
+              app: this.app,
+              converter: this.converter,
+              markdown,
+              sourcePath: context.sourcePath || "",
+              settings: context.settings || this.plugin.settings,
+              component: this,
+              rasterizeMermaid: false,
+              preserveSvgStyleTags: true
+            });
           }
-          return renderObsidianTripletMarkdown({
-            app: this.app,
-            converter: this.converter,
-            markdown,
-            sourcePath: context.sourcePath || "",
-            settings: context.settings || this.plugin.settings,
-            component: this,
-            rasterizeMermaid: false,
-            preserveSvgStyleTags: true
-          });
+          if (this.plugin.settings.externalLinkFootnotes && typeof document !== "undefined" && html) {
+            const wrapper = document.createElement("div");
+            wrapper.innerHTML = html;
+            convertExternalLinksToFootnotes(wrapper, {
+              accentColor: ((_b = (_a = this.theme) == null ? void 0 : _a.config) == null ? void 0 : _b.color) || "#576b95"
+            });
+            html = wrapper.innerHTML;
+          }
+          return html;
         }
       });
       this.nativeRenderPipeline = nativePipeline;
@@ -12652,6 +12881,25 @@ var AppleStyleView = class extends ItemView {
       });
     });
     punctuationSection.classList.add("apple-settings-inline-toggle");
+    const externalLinkSection = this.createSection(advancedArea, "\u5916\u94FE\u8F6C\u5E95\u90E8\u5F15\u7528", (section) => {
+      const row = section.createEl("div", { cls: "apple-settings-inline-row" });
+      const toggle = row.createEl("label", { cls: "apple-toggle" });
+      const checkbox = toggle.createEl("input", { type: "checkbox", cls: "apple-toggle-input" });
+      checkbox.checked = this.plugin.settings.externalLinkFootnotes === true;
+      toggle.createEl("span", { cls: "apple-toggle-slider" });
+      section.createEl("span", {
+        text: "\u5FAE\u4FE1\u8349\u7A3F\u5916\u94FE\u65E0\u6CD5\u70B9\u51FB\u65F6\u5F00\u542F\uFF1A\u6587\u4E2D\u5916\u94FE\u52A0\u4E0A\u6807\u7D22\u5F15\uFF0C\u6587\u672B\u751F\u6210\u5B8C\u6574 URL \u53C2\u8003\u6587\u732E\u5217\u8868",
+        attr: {
+          style: "font-size: 11px; color: var(--apple-secondary); opacity: 0.8; font-weight: 500; display: block;"
+        }
+      });
+      checkbox.addEventListener("change", async () => {
+        this.plugin.settings.externalLinkFootnotes = checkbox.checked;
+        await this.plugin.saveSettings();
+        await this.convertCurrent(true);
+      });
+    });
+    externalLinkSection.classList.add("apple-settings-inline-toggle");
     const macCodeSection = this.createSection(advancedArea, "Mac \u98CE\u683C\u4EE3\u7801\u5757", (section) => {
       const row = section.createEl("div", { cls: "apple-settings-inline-row" });
       const toggle = row.createEl("label", { cls: "apple-toggle" });
@@ -12781,19 +13029,20 @@ var AppleStyleView = class extends ItemView {
   }
   /**
    * 读取当前文档 frontmatter 中的发布元数据
-   * @returns {{ excerpt: string, cover: string, cover_dir: string, coverSrc: string|null }}
+   * @returns {{ title: string, excerpt: string, cover: string, cover_dir: string, coverSrc: string|null }}
    */
   getFrontmatterPublishMeta(activeFile) {
     var _a;
     if (!activeFile) {
-      return { excerpt: "", cover: "", cover_dir: "", coverSrc: null };
+      return { title: "", excerpt: "", cover: "", cover_dir: "", coverSrc: null };
     }
     const frontmatter = (_a = this.app.metadataCache.getFileCache(activeFile)) == null ? void 0 : _a.frontmatter;
+    const title = this.getFrontmatterString(frontmatter, ["title", "Title"]);
     const excerpt = this.getFrontmatterString(frontmatter, ["excerpt"]);
     const cover = this.getFrontmatterString(frontmatter, ["cover"]);
     const cover_dir = this.getFrontmatterString(frontmatter, ["cover_dir", "coverDir", "cover-dir", "coverdir", "CoverDIR"]);
     const coverSrc = cover ? this.resolveVaultPathToResourceSrc(cover) : null;
-    return { excerpt, cover, cover_dir, coverSrc };
+    return { title, excerpt, cover, cover_dir, coverSrc };
   }
   getFrontmatterString(frontmatter, keys) {
     if (!frontmatter || typeof frontmatter !== "object")
@@ -14784,6 +15033,7 @@ var AppleStyleView = class extends ItemView {
     this.aiPreviewApplied = true;
     if (this.previewContainer) {
       this.previewContainer.innerHTML = html;
+      this._buildScrollMap();
       this.previewContainer.scrollTop = scrollTop;
       this.previewContainer.addClass("apple-has-content");
     }
@@ -14822,6 +15072,7 @@ var AppleStyleView = class extends ItemView {
     this.currentHtml = this.baseRenderedHtml;
     this.aiPreviewApplied = false;
     this.previewContainer.innerHTML = this.baseRenderedHtml;
+    this._buildScrollMap();
     this.previewContainer.scrollTop = scrollTop;
     this.previewContainer.addClass("apple-has-content");
     this.syncPreviewPresentationMode();
@@ -14989,6 +15240,30 @@ var AppleStyleView = class extends ItemView {
         text: coverBase64 ? "\u53EF\u76F4\u63A5\u540C\u6B65\uFF1B\u5C01\u9762\u4E0E\u6458\u8981\u53EF\u5728\u9AD8\u7EA7\u9009\u9879\u4E2D\u8C03\u6574\u3002" : "\u5F53\u524D\u672A\u68C0\u6D4B\u5230\u5C01\u9762\uFF0C\u8BF7\u5728\u9AD8\u7EA7\u9009\u9879\u4E2D\u4E0A\u4F20\u5C01\u9762\u540E\u518D\u540C\u6B65\u3002"
       });
     }
+    const titleSection = modal.contentEl.createDiv({ cls: "wechat-modal-section" });
+    titleSection.createEl("label", { text: "\u6587\u7AE0\u6807\u9898", cls: "wechat-modal-label" });
+    const fileBasename = activeFile ? activeFile.basename : "\u672A\u547D\u540D\u6587\u7AE0";
+    const initialTitle = (cachedState == null ? void 0 : cachedState.title) !== void 0 ? cachedState.title : frontmatterMeta.title || fileBasename;
+    const titleInput = titleSection.createEl("input", {
+      cls: "wechat-modal-title-input",
+      type: "text"
+    });
+    titleInput.value = initialTitle;
+    titleInput.style.width = "100%";
+    titleInput.maxLength = 64;
+    titleInput.placeholder = "\u7559\u7A7A\u5219\u4F7F\u7528\u6587\u4EF6\u540D\u4F5C\u4E3A\u6807\u9898";
+    const titleCount = titleSection.createEl("div", {
+      cls: "wechat-title-count",
+      text: `${titleInput.value.length}/64`,
+      style: "text-align: right; font-size: 11px; color: var(--text-muted); margin-top: 4px; opacity: 0.7;"
+    });
+    titleInput.addEventListener("input", () => {
+      titleCount.setText(`${titleInput.value.length}/64`);
+      if (currentPath) {
+        const state = this.articleStates.get(currentPath) || {};
+        this.articleStates.set(currentPath, { ...state, title: titleInput.value });
+      }
+    });
     const advancedOptions = modal.contentEl.createEl("details", { cls: "wechat-sync-advanced" });
     const shouldExpandAdvanced = !mobileSync || !coverBase64;
     if (shouldExpandAdvanced)
@@ -15089,6 +15364,7 @@ var AppleStyleView = class extends ItemView {
       modal.close();
       this.selectedAccountId = selectedAccountId;
       this.sessionCoverBase64 = coverBase64;
+      this.sessionTitle = titleInput.value.trim() || frontmatterMeta.title || fileBasename;
       this.sessionDigest = digestInput.value.trim() || autoDigest || "\u4E00\u952E\u540C\u6B65\u81EA Obsidian";
       this.sessionDraftMediaId = !forceNewDraft && draftMediaId ? draftMediaId : "";
       await this.onSyncToWechat();
@@ -15307,6 +15583,7 @@ var AppleStyleView = class extends ItemView {
    * 处理同步到微信逻辑
    */
   async onSyncToWechat() {
+    var _a;
     const account = resolveSyncAccount({
       accounts: this.plugin.settings.wechatAccounts || [],
       selectedAccountId: this.selectedAccountId,
@@ -15343,6 +15620,7 @@ var AppleStyleView = class extends ItemView {
         sessionCoverBase64: this.sessionCoverBase64,
         sessionThumbMediaId: this.sessionThumbMediaId || "",
         sessionDigest: this.sessionDigest,
+        sessionTitle: this.sessionTitle || "",
         draftMediaId: this.sessionDraftMediaId || "",
         onStatus: (stage) => {
           if (stage === "cover")
@@ -15367,7 +15645,8 @@ var AppleStyleView = class extends ItemView {
         const cache = this.plugin.settings.draftCache || {};
         cache[filePath] = {
           mediaId: resultMediaId,
-          title: activeFile.basename,
+          // 记录实际同步到微信的标题（frontmatter.title / 弹窗输入 / 文件名）
+          title: ((_a = result == null ? void 0 : result.article) == null ? void 0 : _a.title) || activeFile.basename,
           accountId: account.id || "",
           updatedAt: Date.now()
         };
@@ -15684,6 +15963,7 @@ var AppleStyleView = class extends ItemView {
       this.sessionCoverBase64 = null;
       const scrollTop = this.previewContainer.scrollTop;
       this.previewContainer.innerHTML = html;
+      this._buildScrollMap();
       this.previewContainer.scrollTop = scrollTop;
       this.previewContainer.addClass("apple-has-content");
       this.syncPreviewPresentationMode();
@@ -15754,6 +16034,7 @@ var AppleStyleView = class extends ItemView {
   renderHTML(html) {
     this.previewContainer.empty();
     this.previewContainer.innerHTML = html;
+    this._buildScrollMap();
   }
   copyRichHTMLBySelection(htmlContent) {
     var _a;

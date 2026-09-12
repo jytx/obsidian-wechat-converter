@@ -2645,6 +2645,23 @@ input[type="range"].apple-slider:active::-webkit-slider-thumb {
   margin-bottom: 8px;
 }
 
+.wechat-modal-title-input {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--text-normal);
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.wechat-modal-title-input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
 .wechat-modal-cover-content {
   display: flex;
   align-items: center;

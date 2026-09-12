@@ -292,4 +292,97 @@ describe('Wechat Sync Service', () => {
       })
     );
   });
+
+  describe('title resolution', () => {
+    function createTitleService() {
+      const api = createMockApi();
+      return createWechatSyncService({
+        createApi: vi.fn(() => api),
+        srcToBlob: vi.fn(async () => new Blob(['cover'], { type: 'image/png' })),
+        prepareHtmlForDraft: vi.fn(async (html) => html),
+        processAllImages: vi.fn(async () => '<p>x</p>'),
+        processMathFormulas: vi.fn(async () => '<p>x</p>'),
+        cleanHtmlForDraft: vi.fn((html) => html),
+        cleanupConfiguredDirectory: vi.fn(async () => ({ attempted: false })),
+        getFirstImageFromArticle: vi.fn(() => 'app://fallback-cover'),
+      });
+    }
+
+    it('should prefer sessionTitle over frontmatter title and filename', async () => {
+      const service = createTitleService();
+      const result = await service.syncToDraft({
+        account: { appId: 'wx1', appSecret: 'sec' },
+        proxyUrl: '',
+        currentHtml: '<p>x</p>',
+        activeFile: { basename: '封面方案C.md' },
+        publishMeta: { coverSrc: null, title: 'frontmatter-title' },
+        sessionCoverBase64: 'data:image/png;base64,abc',
+        sessionTitle: '弹窗输入标题',
+        sessionDigest: '',
+      });
+      expect(result.article.title).toBe('弹窗输入标题');
+    });
+
+    it('should use frontmatter title when sessionTitle is empty', async () => {
+      const service = createTitleService();
+      const result = await service.syncToDraft({
+        account: { appId: 'wx1', appSecret: 'sec' },
+        proxyUrl: '',
+        currentHtml: '<p>x</p>',
+        activeFile: { basename: '封面方案C.md' },
+        publishMeta: { coverSrc: null, title: 'frontmatter-title' },
+        sessionCoverBase64: 'data:image/png;base64,abc',
+        sessionTitle: '',
+        sessionDigest: '',
+      });
+      expect(result.article.title).toBe('frontmatter-title');
+    });
+
+    it('should fall back to filename basename when neither sessionTitle nor frontmatter title exist', async () => {
+      const service = createTitleService();
+      const result = await service.syncToDraft({
+        account: { appId: 'wx1', appSecret: 'sec' },
+        proxyUrl: '',
+        currentHtml: '<p>x</p>',
+        activeFile: { basename: '封面方案C' },
+        publishMeta: { coverSrc: null, title: '' },
+        sessionCoverBase64: 'data:image/png;base64,abc',
+        sessionTitle: '',
+        sessionDigest: '',
+      });
+      expect(result.article.title).toBe('封面方案C');
+    });
+
+    it('should ignore whitespace-only sessionTitle and frontmatter title', async () => {
+      const service = createTitleService();
+      const result = await service.syncToDraft({
+        account: { appId: 'wx1', appSecret: 'sec' },
+        proxyUrl: '',
+        currentHtml: '<p>x</p>',
+        activeFile: { basename: 'real-filename' },
+        publishMeta: { coverSrc: null, title: '   ' },
+        sessionCoverBase64: 'data:image/png;base64,abc',
+        sessionTitle: '   ',
+        sessionDigest: '',
+      });
+      expect(result.article.title).toBe('real-filename');
+    });
+
+    it('should truncate title to 64 characters', async () => {
+      const service = createTitleService();
+      const longTitle = '一'.repeat(100);
+      const result = await service.syncToDraft({
+        account: { appId: 'wx1', appSecret: 'sec' },
+        proxyUrl: '',
+        currentHtml: '<p>x</p>',
+        activeFile: { basename: 'file' },
+        publishMeta: { coverSrc: null, title: '' },
+        sessionCoverBase64: 'data:image/png;base64,abc',
+        sessionTitle: longTitle,
+        sessionDigest: '',
+      });
+      expect(result.article.title).toBe(longTitle.substring(0, 64));
+      expect(result.article.title.length).toBe(64);
+    });
+  });
 });

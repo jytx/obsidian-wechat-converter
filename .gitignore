@@ -16,3 +16,7 @@ docs/plans/
 .claude/skills/project-release/
 /.idea
 /.spec-workflow
+
+# codegraph 索引
+codegraph/
+.codegraph/

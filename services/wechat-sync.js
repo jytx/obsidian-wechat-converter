@@ -87,6 +87,7 @@ function createWechatSyncService(deps) {
       publishMeta,
       sessionCoverBase64,
       sessionDigest,
+      sessionTitle,
       sessionThumbMediaId,
       draftMediaId,
       onStatus,
@@ -132,9 +133,13 @@ function createWechatSyncService(deps) {
       const cleanedResult = replaceUnuploadedDraftImagesWithPlaceholders(cleanHtmlForDraft(processedHtml));
       const cleanedHtml = cleanedResult.html;
 
-      const title = activeFile ? activeFile.basename : '无标题文章';
+      // 标题优先级：弹窗输入(sessionTitle) -> frontmatter.title(publishMeta.title) -> 文件名 basename
+      const fileBasename = activeFile ? activeFile.basename : '无标题文章';
+      const resolvedTitle = (sessionTitle && sessionTitle.trim())
+        || (publishMeta && publishMeta.title && publishMeta.title.trim())
+        || fileBasename;
       const article = {
-        title: title.substring(0, 64),
+        title: resolvedTitle.substring(0, 64),
         content: cleanedHtml,
         thumb_media_id: thumbMediaId,
         author: account.author || '',

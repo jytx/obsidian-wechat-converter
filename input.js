@@ -6,6 +6,7 @@ const { resolveMarkdownSource } = require('./services/markdown-source');
 const { normalizeVaultPath, isAbsolutePathLike } = require('./services/path-utils');
 const { renderObsidianTripletMarkdown } = require('./services/obsidian-triplet-renderer');
 const { canUseNativePreviewFastPath, renderNativeMarkdown } = require('./services/native-renderer');
+const { convertExternalLinksToFootnotes } = require('./services/external-link-footnotes');
 const { convertRenderedMermaidDiagramsToImages } = require('./services/rendered-mermaid');
 const {
   AI_LAYOUT_SCHEMA_VERSION,
@@ -149,6 +150,7 @@ const DEFAULT_SETTINGS = {
   imageAttachmentLocation: '${filename}_assets', // 图片保存目录模式
   hideImageFolders: false, // 隐藏图片附件文件夹
   uploadOnPaste: false, // 粘贴时自动上传到微信
+  externalLinkFootnotes: false, // 外链转底部引用（解决微信草稿外链无法点击）
   // 旧字段保留用于迁移检测
   wechatAppId: '',
   wechatAppSecret: '',
@@ -620,6 +622,7 @@ class AppleStyleView extends ItemView {
     this.lastActiveFile = null;
     this.sessionCoverBase64 = ''; // 本次文章的临时封面
     this.sessionDigest = ''; // 本次同步的摘要
+    this.sessionTitle = ''; // 本次同步的文章标题（覆盖文件名）
 
     // 双向同步滚动互斥锁 (原子锁方案)
     // 用于区分"用户滚动"和"代码同步滚动"，彻底解决死循环和抖动问题
@@ -888,6 +891,61 @@ class AppleStyleView extends ItemView {
    * 注册同步滚动 (双向: Editor <-> Preview)
    * 采用"原子锁"机制 + "差值检测"机制，彻底解决死循环和精度问题
    */
+  /**
+   * 构建预览行号→绝对像素偏移映射表
+   * 必须在 innerHTML 赋值后、scrollTop 恢复前调用（此时 scrollTop=0）
+   * 利用 getBoundingClientRect 精确计算每个锚点元素在容器内的绝对位置
+   */
+  _buildScrollMap() {
+    if (!this.previewContainer) return;
+    this._scrollMap = [];
+    const containerRect = this.previewContainer.getBoundingClientRect();
+    const elements = this.previewContainer.querySelectorAll('[data-line]');
+    for (const el of elements) {
+      const line = parseInt(el.getAttribute('data-line'), 10);
+      if (isNaN(line)) continue;
+      const elRect = el.getBoundingClientRect();
+      this._scrollMap.push({ line, top: elRect.top - containerRect.top });
+    }
+    this._scrollMap.sort((a, b) => a.top - b.top);
+  }
+
+  /**
+   * 在映射表中查找行号 <= targetLine 的最近条目（二分查找）
+   */
+  _findScrollMapByLine(targetLine) {
+    if (!this._scrollMap || this._scrollMap.length === 0) return null;
+    let lo = 0, hi = this._scrollMap.length - 1, result = null;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (this._scrollMap[mid].line <= targetLine) {
+        result = this._scrollMap[mid];
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * 在映射表中根据 scrollTop 查找对应的行号（二分查找 top 值）
+   */
+  _findLineByScrollTop(scrollTop) {
+    if (!this._scrollMap || this._scrollMap.length === 0) return -1;
+    let lo = 0, hi = this._scrollMap.length - 1, result = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (this._scrollMap[mid].top <= scrollTop + 10) {
+        result = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return result >= 0 ? this._scrollMap[result].line : -1;
+  }
+
   registerScrollSync(activeView) {
     // 1. 清理旧的监听器
     if (this.activeEditorScroller && this.editorScrollListener) {
@@ -901,92 +959,136 @@ class AppleStyleView extends ItemView {
     this.editorScrollListener = null;
     this.previewScrollListener = null;
 
-    // 重置原子锁标志位
     this.ignoreNextPreviewScroll = false;
     this.ignoreNextEditorScroll = false;
+    this._editorRafPending = false;
+    this._previewRafPending = false;
 
     if (!activeView) return;
 
-    // 2. 获取 Editor Scroller
+    // 2. 获取 Editor Scroller 和 EditorView
     const editorScroller = activeView.contentEl.querySelector('.cm-scroller');
     if (!editorScroller) return;
     this.activeEditorScroller = editorScroller;
 
-    // === Listener A: Editor -> Preview ===
-    this.editorScrollListener = () => {
-      // 可见性检查：使用原生 offsetParent 判断是否在 DOM 树中且可见
-      if (!this.containerEl.offsetParent) return;
+    const editorView = activeView.editor?.cm;
 
-      // 锁检查：如果是 Preview 带来的滚动，本次忽略，并重置锁
+    // === Listener A: Editor -> Preview（锚点映射 + RAF 节流）===
+    this.editorScrollListener = () => {
+      if (!this.containerEl.offsetParent) return;
       if (this.ignoreNextEditorScroll) {
         this.ignoreNextEditorScroll = false;
         return;
       }
-
       if (!this.previewContainer) return;
+      if (this._editorRafPending) return;
+      this._editorRafPending = true;
+      requestAnimationFrame(() => {
+        this._editorRafPending = false;
 
-      const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
-      const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
+        // 端点处理
+        if (editorScroller.scrollTop === 0) {
+          this.ignoreNextPreviewScroll = true;
+          this.previewContainer.scrollTop = 0;
+          return;
+        }
+        const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
+        const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
+        if (editorHeight > 0 && Math.abs(editorScroller.scrollTop - editorHeight) < 5) {
+          this.ignoreNextPreviewScroll = true;
+          this.previewContainer.scrollTop = previewHeight;
+          return;
+        }
 
-      if (editorHeight <= 0 || previewHeight <= 0) return;
+        // 锚点映射：编辑器可见首行 → 预览中对应锚点
+        if (editorView && this._scrollMap && this._scrollMap.length > 0) {
+          try {
+            const visibleRanges = editorView.visibleRanges;
+            if (visibleRanges && visibleRanges.length > 0) {
+              const line = editorView.state.doc.lineAt(visibleRanges[0].from).number - 1;
+              const entry = this._findScrollMapByLine(line);
+              if (entry) {
+                const targetScrollTop = Math.max(0, entry.top);
+                if (Math.abs(this.previewContainer.scrollTop - targetScrollTop) > 3) {
+                  this.ignoreNextPreviewScroll = true;
+                  this.previewContainer.scrollTop = targetScrollTop;
+                }
+                return;
+              }
+            }
+          } catch { /* 回退到比例映射 */ }
+        }
 
-      // 计算目标位置
-      let targetScrollTop;
-
-      // 端点严格对齐
-      if (editorScroller.scrollTop === 0) {
-        targetScrollTop = 0;
-      } else if (Math.abs(editorScroller.scrollTop - editorHeight) < 2) { // 放宽到底部判定
-        targetScrollTop = previewHeight;
-      } else {
-        const ratio = editorScroller.scrollTop / editorHeight;
-        targetScrollTop = ratio * previewHeight;
-      }
-
-      // 差值检测：只有当变化足够大时才应用，避免微小抖动和死循环
-      if (Math.abs(this.previewContainer.scrollTop - targetScrollTop) > 1) {
-        this.ignoreNextPreviewScroll = true; // 上锁：告诉 Preview 下次滚动是代码触发的
-        this.previewContainer.scrollTop = targetScrollTop;
-      }
+        // 回退：比例映射
+        if (editorHeight > 0 && previewHeight > 0) {
+          const ratio = editorScroller.scrollTop / editorHeight;
+          const targetScrollTop = ratio * previewHeight;
+          if (Math.abs(this.previewContainer.scrollTop - targetScrollTop) > 1) {
+            this.ignoreNextPreviewScroll = true;
+            this.previewContainer.scrollTop = targetScrollTop;
+          }
+        }
+      });
     };
 
-    // === Listener B: Preview -> Editor ===
+    // === Listener B: Preview -> Editor（锚点映射 + RAF 节流）===
     this.previewScrollListener = () => {
-      // 可见性检查
       if (!this.containerEl.offsetParent) return;
-
-      // 锁检查
       if (this.ignoreNextPreviewScroll) {
         this.ignoreNextPreviewScroll = false;
         return;
       }
+      if (this._previewRafPending) return;
+      this._previewRafPending = true;
+      requestAnimationFrame(() => {
+        this._previewRafPending = false;
 
-      const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
-      const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
+        // 端点处理
+        if (this.previewContainer.scrollTop === 0) {
+          this.ignoreNextEditorScroll = true;
+          editorScroller.scrollTop = 0;
+          return;
+        }
+        const previewHeight = this.previewContainer.scrollHeight - this.previewContainer.clientHeight;
+        const editorHeight = editorScroller.scrollHeight - editorScroller.clientHeight;
+        if (previewHeight > 0 && Math.abs(this.previewContainer.scrollTop - previewHeight) < 5) {
+          this.ignoreNextEditorScroll = true;
+          editorScroller.scrollTop = editorHeight;
+          return;
+        }
 
-      if (editorHeight <= 0 || previewHeight <= 0) return;
+        // 锚点映射：预览 scrollTop → 对应行号 → 编辑器该行的像素位置
+        if (this._scrollMap && this._scrollMap.length > 0 && editorView) {
+          const line = this._findLineByScrollTop(this.previewContainer.scrollTop);
+          if (line >= 0) {
+            try {
+              const docLine = editorView.state.doc.line(line + 1);
+              if (docLine) {
+                const block = editorView.lineBlockAt(docLine.from);
+                const targetScrollTop = Math.max(0, block.top);
+                if (Math.abs(editorScroller.scrollTop - targetScrollTop) > 3) {
+                  this.ignoreNextEditorScroll = true;
+                  editorScroller.scrollTop = targetScrollTop;
+                }
+                return;
+              }
+            } catch { /* 回退到比例映射 */ }
+          }
+        }
 
-      // 计算目标位置
-      let targetScrollTop;
-
-      // 端点严格对齐
-      if (this.previewContainer.scrollTop === 0) {
-        targetScrollTop = 0;
-      } else if (Math.abs(this.previewContainer.scrollTop - previewHeight) < 2) {
-        targetScrollTop = editorHeight;
-      } else {
-        const ratio = this.previewContainer.scrollTop / previewHeight;
-        targetScrollTop = ratio * editorHeight;
-      }
-
-      // 差值检测
-      if (Math.abs(editorScroller.scrollTop - targetScrollTop) > 1) {
-        this.ignoreNextEditorScroll = true; // 上锁
-        editorScroller.scrollTop = targetScrollTop;
-      }
+        // 回退：比例映射
+        if (editorHeight > 0 && previewHeight > 0) {
+          const ratio = this.previewContainer.scrollTop / previewHeight;
+          const targetScrollTop = ratio * editorHeight;
+          if (Math.abs(editorScroller.scrollTop - targetScrollTop) > 1) {
+            this.ignoreNextEditorScroll = true;
+            editorScroller.scrollTop = targetScrollTop;
+          }
+        }
+      });
     };
 
-    // 4. 绑定监听 (使用 passive 提升性能)
+    // 3. 绑定监听
     editorScroller.addEventListener('scroll', this.editorScrollListener, { passive: true });
     this.previewContainer.addEventListener('scroll', this.previewScrollListener, { passive: true });
   }
@@ -1010,23 +1112,36 @@ class AppleStyleView extends ItemView {
       this.converter = runtime.converter;
       const { nativePipeline } = createRenderPipelines({
         candidateRenderer: async (markdown, context = {}) => {
+          let html;
           if (canUseNativePreviewFastPath(markdown)) {
-            return renderNativeMarkdown({
+            html = await renderNativeMarkdown({
               converter: this.converter,
               markdown,
               sourcePath: context.sourcePath || '',
             });
+          } else {
+            html = await renderObsidianTripletMarkdown({
+              app: this.app,
+              converter: this.converter,
+              markdown,
+              sourcePath: context.sourcePath || '',
+              settings: context.settings || this.plugin.settings,
+              component: this,
+              rasterizeMermaid: false,
+              preserveSvgStyleTags: true,
+            });
           }
-          return renderObsidianTripletMarkdown({
-            app: this.app,
-            converter: this.converter,
-            markdown,
-            sourcePath: context.sourcePath || '',
-            settings: context.settings || this.plugin.settings,
-            component: this,
-            rasterizeMermaid: false,
-            preserveSvgStyleTags: true,
-          });
+          // 外链转底部引用：解决微信草稿箱外链无法点击的平台限制
+          // 在两条渲染路径统一后处理，保证预览/复制/同步行为一致
+          if (this.plugin.settings.externalLinkFootnotes && typeof document !== 'undefined' && html) {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = html;
+            convertExternalLinksToFootnotes(wrapper, {
+              accentColor: this.theme?.config?.color || '#576b95',
+            });
+            html = wrapper.innerHTML;
+          }
+          return html;
         },
       });
       this.nativeRenderPipeline = nativePipeline;
@@ -1327,6 +1442,31 @@ class AppleStyleView extends ItemView {
     });
     punctuationSection.classList.add('apple-settings-inline-toggle');
 
+    // === 外链转底部引用 ===
+    // 解决微信公众号草稿箱外链无法点击的平台限制：
+    // 开启后文中外链加上标索引，文末生成完整 URL 参考文献列表
+    const externalLinkSection = this.createSection(advancedArea, '外链转底部引用', (section) => {
+      const row = section.createEl('div', { cls: 'apple-settings-inline-row' });
+      const toggle = row.createEl('label', { cls: 'apple-toggle' });
+      const checkbox = toggle.createEl('input', { type: 'checkbox', cls: 'apple-toggle-input' });
+      checkbox.checked = this.plugin.settings.externalLinkFootnotes === true;
+      toggle.createEl('span', { cls: 'apple-toggle-slider' });
+
+      section.createEl('span', {
+        text: '微信草稿外链无法点击时开启：文中外链加上标索引，文末生成完整 URL 参考文献列表',
+        attr: {
+          style: 'font-size: 11px; color: var(--apple-secondary); opacity: 0.8; font-weight: 500; display: block;'
+        }
+      });
+
+      checkbox.addEventListener('change', async () => {
+        this.plugin.settings.externalLinkFootnotes = checkbox.checked;
+        await this.plugin.saveSettings();
+        await this.convertCurrent(true);
+      });
+    });
+    externalLinkSection.classList.add('apple-settings-inline-toggle');
+
     // === Mac 代码块开关 ===
     const macCodeSection = this.createSection(advancedArea, 'Mac 风格代码块', (section) => {
       const row = section.createEl('div', { cls: 'apple-settings-inline-row' });
@@ -1477,14 +1617,15 @@ class AppleStyleView extends ItemView {
 
   /**
    * 读取当前文档 frontmatter 中的发布元数据
-   * @returns {{ excerpt: string, cover: string, cover_dir: string, coverSrc: string|null }}
+   * @returns {{ title: string, excerpt: string, cover: string, cover_dir: string, coverSrc: string|null }}
    */
   getFrontmatterPublishMeta(activeFile) {
     if (!activeFile) {
-      return { excerpt: '', cover: '', cover_dir: '', coverSrc: null };
+      return { title: '', excerpt: '', cover: '', cover_dir: '', coverSrc: null };
     }
 
     const frontmatter = this.app.metadataCache.getFileCache(activeFile)?.frontmatter;
+    const title = this.getFrontmatterString(frontmatter, ['title', 'Title']);
     const excerpt = this.getFrontmatterString(frontmatter, ['excerpt']);
     const cover = this.getFrontmatterString(frontmatter, ['cover']);
     const cover_dir = this.getFrontmatterString(frontmatter, ['cover_dir', 'coverDir', 'cover-dir', 'coverdir', 'CoverDIR']);
@@ -1492,7 +1633,7 @@ class AppleStyleView extends ItemView {
     // 解析失败时静默回退：返回 null，不中断流程
     const coverSrc = cover ? this.resolveVaultPathToResourceSrc(cover) : null;
 
-    return { excerpt, cover, cover_dir, coverSrc };
+    return { title, excerpt, cover, cover_dir, coverSrc };
   }
 
   getFrontmatterString(frontmatter, keys) {
@@ -3627,8 +3768,10 @@ class AppleStyleView extends ItemView {
     this.aiPreviewApplied = true;
     if (this.previewContainer) {
       this.previewContainer.innerHTML = html;
+      this._buildScrollMap();
       this.previewContainer.scrollTop = scrollTop;
       this.previewContainer.addClass('apple-has-content');
+
     }
     this.syncPreviewPresentationMode();
     this.refreshAiLayoutPanel();
@@ -3665,6 +3808,7 @@ class AppleStyleView extends ItemView {
     this.currentHtml = this.baseRenderedHtml;
     this.aiPreviewApplied = false;
     this.previewContainer.innerHTML = this.baseRenderedHtml;
+    this._buildScrollMap();
     this.previewContainer.scrollTop = scrollTop;
     this.previewContainer.addClass('apple-has-content');
     this.syncPreviewPresentationMode();
@@ -3865,6 +4009,39 @@ class AppleStyleView extends ItemView {
       });
     }
 
+    // 标题设置：始终可见，便于在发布前核对/修改
+    // 默认值优先 frontmatter.title，回退到文件名 basename
+    const titleSection = modal.contentEl.createDiv({ cls: 'wechat-modal-section' });
+    titleSection.createEl('label', { text: '文章标题', cls: 'wechat-modal-label' });
+
+    const fileBasename = activeFile ? activeFile.basename : '未命名文章';
+    const initialTitle = cachedState?.title !== undefined
+      ? cachedState.title
+      : (frontmatterMeta.title || fileBasename);
+
+    const titleInput = titleSection.createEl('input', {
+      cls: 'wechat-modal-title-input',
+      type: 'text',
+    });
+    titleInput.value = initialTitle;
+    titleInput.style.width = '100%';
+    titleInput.maxLength = 64; // 微信草稿标题上限 64 字
+    titleInput.placeholder = '留空则使用文件名作为标题';
+
+    const titleCount = titleSection.createEl('div', {
+      cls: 'wechat-title-count',
+      text: `${titleInput.value.length}/64`,
+      style: 'text-align: right; font-size: 11px; color: var(--text-muted); margin-top: 4px; opacity: 0.7;'
+    });
+
+    titleInput.addEventListener('input', () => {
+      titleCount.setText(`${titleInput.value.length}/64`);
+      if (currentPath) {
+        const state = this.articleStates.get(currentPath) || {};
+        this.articleStates.set(currentPath, { ...state, title: titleInput.value });
+      }
+    });
+
     const advancedOptions = modal.contentEl.createEl('details', { cls: 'wechat-sync-advanced' });
     const shouldExpandAdvanced = !mobileSync || !coverBase64;
     if (shouldExpandAdvanced) advancedOptions.setAttribute('open', '');
@@ -4000,6 +4177,8 @@ class AppleStyleView extends ItemView {
       modal.close();
       this.selectedAccountId = selectedAccountId;
       this.sessionCoverBase64 = coverBase64;
+      // 标题：用户输入 -> frontmatter.title -> 文件名
+      this.sessionTitle = titleInput.value.trim() || frontmatterMeta.title || fileBasename;
       // 传递用户输入的摘要，或使用自动提取的摘要
       this.sessionDigest = digestInput.value.trim() || autoDigest || '一键同步自 Obsidian';
       // 草稿模式：有 mediaId 且非强制新建时走更新
@@ -4309,6 +4488,7 @@ class AppleStyleView extends ItemView {
         sessionCoverBase64: this.sessionCoverBase64,
         sessionThumbMediaId: this.sessionThumbMediaId || '',
         sessionDigest: this.sessionDigest,
+        sessionTitle: this.sessionTitle || '',
         draftMediaId: this.sessionDraftMediaId || '',
         onStatus: (stage) => {
           if (stage === 'cover') notice.setMessage('正在处理封面图...');
@@ -4332,7 +4512,8 @@ class AppleStyleView extends ItemView {
         const cache = this.plugin.settings.draftCache || {};
         cache[filePath] = {
           mediaId: resultMediaId,
-          title: activeFile.basename,
+          // 记录实际同步到微信的标题（frontmatter.title / 弹窗输入 / 文件名）
+          title: result?.article?.title || activeFile.basename,
           accountId: account.id || '',
           updatedAt: Date.now(),
         };
@@ -4695,7 +4876,9 @@ class AppleStyleView extends ItemView {
       // 滚动位置保持 (Scroll Preservation)
       const scrollTop = this.previewContainer.scrollTop;
       this.previewContainer.innerHTML = html;
+      this._buildScrollMap();
       this.previewContainer.scrollTop = scrollTop;
+
 
       this.previewContainer.addClass('apple-has-content'); // 添加内容状态类
       this.syncPreviewPresentationMode();
@@ -4776,6 +4959,7 @@ class AppleStyleView extends ItemView {
   renderHTML(html) {
     this.previewContainer.empty();
     this.previewContainer.innerHTML = html;
+    this._buildScrollMap();
   }
 
   copyRichHTMLBySelection(htmlContent) {
